@@ -1,23 +1,91 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { authFetch } from '@/lib/authFetch';
 import styles from '../login/styles.module.css';
+import { useAuth } from '@/context/AuthContext';
+
+/** Parse roles from JWT payload, normalize (lowercase, strip ROLE_ prefix) */
+function parseRolesFromJwt(token?: string | null): string[] {
+    if (!token) return [];
+    try {
+        const parts = token.split('.');
+        if (parts.length < 2) return [];
+        const payload = parts[1];
+        const b64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=');
+        const json = decodeURIComponent(
+            atob(b64)
+                .split('')
+                .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+        );
+        const obj = JSON.parse(json);
+        const claimCandidates = [obj.roles, obj.role, obj.authorities, obj.authority, obj.rolesList, obj.scope];
+        let roles: any = null;
+        for (const c of claimCandidates) {
+            if (c) { roles = c; break; }
+        }
+        if (!roles) return [];
+        if (Array.isArray(roles)) return roles.map((r) => String(r).replace(/^ROLE_/i, '').toLowerCase());
+        if (typeof roles === 'string') return roles.split(',').map((r) => String(r).replace(/^ROLE_/i, '').trim().toLowerCase());
+        return [];
+    } catch (err) {
+        console.error('parseRolesFromJwt error', err);
+        return [];
+    }
+}
+
+/** Safely extract roles from profile object returned by /profile/me */
+function extractRolesFromProfile(profile: any): string[] {
+    if (!profile) return [];
+    const set = new Set<string>();
+
+    if (profile.role) {
+        if (typeof profile.role === 'string') set.add(profile.role.replace(/^ROLE_/i, '').toLowerCase());
+    }
+    if (profile.roles) {
+        if (Array.isArray(profile.roles)) profile.roles.forEach((r: any) => set.add(String(r).replace(/^ROLE_/i, '').toLowerCase()));
+        else if (typeof profile.roles === 'string') profile.roles.split(',').forEach((r: string) => set.add(r.replace(/^ROLE_/i, '').trim().toLowerCase()));
+    }
+
+    if (profile.user) {
+        const u = profile.user;
+        if (u.roles && Array.isArray(u.roles)) u.roles.forEach((r: any) => set.add(String(r).replace(/^ROLE_/i, '').toLowerCase()));
+        if (u.user_roles && Array.isArray(u.user_roles)) u.user_roles.forEach((ur: any) => {
+            if (typeof ur === 'string') set.add(ur.replace(/^ROLE_/i, '').toLowerCase());
+            else if (ur && ur.roleName) set.add(String(ur.roleName).replace(/^ROLE_/i, '').toLowerCase());
+            else if (ur && ur.role && typeof ur.role === 'string') set.add(String(ur.role).replace(/^ROLE_/i, '').toLowerCase());
+        });
+    }
+
+    if (profile.worker != null) set.add('worker');
+    if (profile.admin != null) set.add('admin');
+    if (profile.user != null) set.add('user');
+
+    if (profile.profile_user) set.add('user');
+    if (profile.profile_worker) set.add('worker');
+    if (profile.profile_admin) set.add('admin');
+
+    return Array.from(set);
+}
 
 type Profile = {
+    user?: any;
+    worker?: any;
+    admin?: any;
+    roles?: any;
+    role?: any;
     email?: string;
     firstName?: string;
-    lastName?: string;
-    roles?: string[] | string;
-    role?: string;
 };
 
-export default function DashboardEntry() {
+export default function DashboardPage() {
     const router = useRouter();
+    const { accessToken } = useAuth();
+    const [profile, setProfile] = useState<Profile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [profile, setProfile] = useState<Profile | null>(null);
 
     useEffect(() => {
         let mounted = true;
@@ -27,8 +95,9 @@ export default function DashboardEntry() {
                 const res = await authFetch('/api/profile/me', { method: 'GET' });
                 if (!mounted) return;
                 if (!res.ok) {
-                    // niepomyślnie -> przekieruj do /login lub /profile
-                    router.push('/login');
+                    // don't auto-redirect here — show UI that allows user to go to login manually
+                    // but preserve behavior: if 401, show no profile and let "Profil" link lead to login page
+                    setProfile(null);
                     return;
                 }
                 const data = await res.json().catch(() => null);
@@ -40,18 +109,26 @@ export default function DashboardEntry() {
                 if (mounted) setLoading(false);
             }
         })();
+        return () => { mounted = false; };
+    }, [router, accessToken]);
 
-        return () => {
-            mounted = false;
-        };
-    }, [router]);
+    const mergedRoles = useMemo(() => {
+        const rolesFromJwt = parseRolesFromJwt(accessToken ?? null);
+        const rolesFromProfile = extractRolesFromProfile(profile);
+        const set = new Set<string>();
+        rolesFromJwt.forEach((r) => set.add(r));
+        rolesFromProfile.forEach((r) => set.add(r));
+        if (!set.size) set.add('user');
+        return Array.from(set);
+    }, [accessToken, profile]);
+
+    const hasWorker = mergedRoles.some((r) => r.includes('worker'));
+    const hasAdmin = mergedRoles.some((r) => r.includes('admin'));
 
     if (loading) {
         return (
             <div className={styles.container}>
-                <div className={styles.card}>
-                    <p style={{ textAlign: 'center' }}>Ładowanie...</p>
-                </div>
+                <div className={styles.card}>Ładowanie...</div>
             </div>
         );
     }
@@ -59,119 +136,59 @@ export default function DashboardEntry() {
     if (error) {
         return (
             <div className={styles.container}>
-                <div className={styles.card}>
-                    <p style={{ color: 'red', textAlign: 'center' }}>{error}</p>
-                </div>
+                <div className={styles.card} style={{ color: 'red' }}>{error}</div>
             </div>
         );
     }
 
-    // Normalize roles to array of lowercase strings for easy checks
-    const rolesArr: string[] = (() => {
-        if (!profile) return [];
-        const raw = profile.roles ?? profile.role ?? [];
-        if (Array.isArray(raw)) return raw.map((r) => String(r).toLowerCase());
-        return String(raw).split(',').map((r) => r.trim().toLowerCase());
-    })();
+    const displayName = profile?.user?.fullName ?? profile?.firstName ?? '';
 
-    // Helper that checks for admin/worker presence even if backend returns "ROLE_ADMIN" etc.
-    const hasAdmin = rolesArr.some((r) => r.includes('admin'));
-    const hasWorker = rolesArr.some((r) => r.includes('worker'));
-    const hasOnlyUser = rolesArr.length === 0 || rolesArr.every((r) => r.includes('user') || r === '');
-
-    // If user only (no worker/admin) -> show full screen waiting message
-    if (hasOnlyUser) {
-        return <UserWaitingFullScreen email={profile?.email} />;
-    }
-
-    // If user has multiple roles show dashboard with tiles for each
     return (
         <div style={{ minHeight: '100vh', background: '#f4f7fb', padding: '48px 16px' }}>
             <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+                <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 20 }}>
                     <div>
-                        <h1 style={{ margin: 0, fontSize: 28 }}>Witaj{profile?.firstName ? `, ${profile.firstName}` : ''}</h1>
-                        <p style={{ margin: '6px 0 0', color: '#6b7280' }}>
-                            Twoje role: {rolesArr.join(', ')}
-                        </p>
+                        <h1 style={{ margin: 0, fontSize: 36 }}>{`Witaj${displayName ? `, ${displayName}` : ''}`}</h1>
+                        <p style={{ marginTop: 8, color: '#6b7280' }}>Role: {mergedRoles.join(', ')}</p>
                     </div>
                     <div>
-                        <a href="/settings" className={styles.link} style={{ fontWeight: 600 }}>Ustawienia</a>
+                        <a href="/settings" className={styles.link} style={{ fontWeight: 700 }}>Ustawienia</a>
                     </div>
-                </div>
+                </header>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
+                    {/* Profile tile - always visible */}
+                    <Tile title="Profil" description="Twoje dane i ustawienia konta." onClick={() => router.push('/profile')} accent="#4b5563" emoji="👤" />
+
+                    {/* Admin tile - only render if user has admin */}
                     {hasAdmin && (
-                        <RoleCard
-                            title="Panel administratora"
-                            description="Dostęp do zarządzania publikacjami, dyscyplinami i cyklami."
-                            href="/admin/management"
-                            accent="#7c3aed"
-                            emoji="🛠️"
-                        />
+                        <Tile title="Panel administratora" description="Zarządzaj publikacjami, dyscyplinami i cyklami." onClick={() => router.push('/admin/management')} accent="#7c3aed" emoji="🛠️" />
                     )}
 
+                    {/* Worker tile - only render if user has worker */}
                     {hasWorker && (
-                        <RoleCard
-                            title="Panel pracownika"
-                            description="Przeglądaj i zarządzaj swoimi monografiami i publikacjami."
-                            href="/worker/dashboard"
-                            accent="#0ea5a4"
-                            emoji="📚"
-                        />
+                        <Tile title="Panel pracownika" description="Przeglądaj i zarządzaj swoimi monografiami i publikacjami." onClick={() => router.push('/worker/dashboard')} accent="#0ea5a4" emoji="📚" />
                     )}
-
-                    {/* Dodatkowe kafelki możesz tu dodać dla innych ról */}
                 </div>
             </div>
         </div>
     );
 }
 
-/* Role card component */
-function RoleCard({ title, description, href, accent, emoji }: { title: string; description: string; href: string; accent?: string; emoji?: string }) {
+/* Simple tile component that uses onClick (router.push) */
+function Tile({ title, description, onClick, accent, emoji }: { title: string; description: string; onClick: () => void; accent?: string; emoji?: string }) {
     return (
-        <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 10px 30px rgba(2,6,23,0.06)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-            <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ width: 56, height: 56, borderRadius: 12, background: accent ?? '#5b46f0', display: 'grid', placeItems: 'center', color: '#fff', fontSize: 22 }}>{emoji ?? '⭐'}</div>
-                    <div>
-                        <h3 style={{ margin: 0, fontSize: 18 }}>{title}</h3>
-                        <p style={{ margin: '6px 0 0', color: '#6b7280' }}>{description}</p>
-                    </div>
-                </div>
+        <button onClick={onClick} style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 12px 40px rgba(2,6,23,0.06)', display: 'flex', alignItems: 'center', gap: 18, border: 'none', width: '100%', textAlign: 'left', cursor: 'pointer' }}>
+            <div style={{ width: 72, height: 72, borderRadius: 14, background: accent ?? '#5b46f0', display: 'grid', placeItems: 'center', color: '#fff', fontSize: 28 }}>{emoji ?? '⭐'}</div>
+            <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0, fontSize: 18 }}>{title}</h3>
+                <p style={{ margin: '8px 0 0', color: '#6b7280' }}>{description}</p>
             </div>
-
-            <div style={{ marginTop: 18, textAlign: 'right' }}>
-                <a href={href} style={{ background: accent ?? '#5b46f0', color: '#fff', padding: '10px 14px', borderRadius: 8, textDecoration: 'none', fontWeight: 600 }}>
-                    Przejdź
-                </a>
+            <div style={{ marginLeft: 'auto' }}>
+        <span style={{ display: 'inline-block', padding: '8px 14px', borderRadius: 10, background: accent ?? '#5b46f0', color: '#fff', fontWeight: 700 }}>
+          Przejdź
+        </span>
             </div>
-        </div>
-    );
-}
-
-/* Full-screen waiting view for plain users */
-function UserWaitingFullScreen({ email }: { email?: string }) {
-    return (
-        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#f4f7fb' }}>
-            <div style={{ width: 'min(760px, 96%)', textAlign: 'center', padding: 48 }}>
-                <div style={{ background: '#fff', borderRadius: 12, padding: 40, boxShadow: '0 20px 60px rgba(2,6,23,0.06)' }}>
-                    <div style={{ width: 96, height: 96, borderRadius: 9999, margin: '0 auto', background: '#5b46f0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 28, fontWeight: 700 }}>
-                        A
-                    </div>
-                    <h1 style={{ marginTop: 20, fontSize: 32, color: '#0f172a', fontWeight: 800 }}>Czekaj na przypisanie roli</h1>
-                    <p style={{ marginTop: 12, color: '#6b7280', fontSize: 16 }}>
-                        Twoje konto ({email ?? 'konto'}) zostało zarejestrowane. Administrator przypisze Ci rolę — otrzymasz powiadomienie, gdy to nastąpi.
-                    </p>
-
-                    <div style={{ marginTop: 28 }}>
-                        <a href="/settings" style={{ display: 'inline-block', padding: '10px 16px', borderRadius: 8, background: '#5b46f0', color: '#fff', textDecoration: 'none', fontWeight: 600 }}>
-                            Przejdź do ustawień
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
+        </button>
     );
 }
