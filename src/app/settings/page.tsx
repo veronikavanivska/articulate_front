@@ -187,6 +187,7 @@ export default function SettingsPage() {
     async function submitChangePassword() {
         setPwErr(null);
         setPwMsg(null);
+
         if (!currentPassword || !newPassword || !confirmPassword) {
             setPwErr('Uzupełnij wszystkie pola');
             return;
@@ -199,13 +200,18 @@ export default function SettingsPage() {
             setPwErr('Hasła nie są zgodne');
             return;
         }
+
         setPwLoading(true);
         try {
-            await changePassword(currentPassword, newPassword);
+            // przekazujemy obiekt zgodny z implementacją changePassword w AuthContext
+            await changePassword({ currentPassword, newPassword });
+
             setPwMsg('Hasło zmieniono pomyślnie.');
             setCurrentPassword('');
             setNewPassword('');
             setConfirmPassword('');
+
+            // zamknij modal po chwili, aby użytkownik zobaczył komunikat
             setTimeout(() => setModal(null), 400);
         } catch (err: any) {
             setPwErr(err?.message ?? 'Błąd zmiany hasła');

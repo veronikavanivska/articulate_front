@@ -1,167 +1,113 @@
 'use client';
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-type AuthContextType = {
+import React, { createContext, useContext, useEffect, useState } from 'react';
+
+export type AuthContextValue = {
     accessToken: string | null;
-    login: (email: string, password: string) => Promise<void>;
-    logout: () => Promise<void>;
-    register: (email: string, password: string) => Promise<void>;
-    changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+    initialized: boolean;
+    setAccessToken: (t: string | null) => void;
+    login: (email: string, password: string) => Promise<{ ok: boolean; message?: string }>;
+    loginWithToken: (t: string) => void;
+    changePassword: (payload: { currentPassword: string; newPassword: string }) => Promise<void>;
     changeEmail: (newEmail: string) => Promise<void>;
-    isAuthenticated: boolean;
+    logout: () => Promise<void>;
 };
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-export const useAuth = () => { const ctx = useContext(AuthContext); if (!ctx) throw new Error('useAuth must be used inside AuthProvider'); return ctx; };
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-function parseJwtExpiry(token: string): number | null {
-    try {
-        const payload = token.split('.')[1];
-        const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-        const json = JSON.parse(decodeURIComponent(atob(b64).split('').map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')));
-        return json?.exp ? json.exp * 1000 : null;
-    } catch { return null; }
+export function useAuth(): AuthContextValue {
+    const ctx = useContext(AuthContext);
+    if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+    return ctx;
 }
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [accessToken, setAccessToken] = useState<string | null>(null);
-    const refreshTimerRef = useRef<number | null>(null);
-    const refreshingRef = useRef(false);
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+    const [accessToken, setAccessTokenState] = useState<string | null>(null);
+    const [initialized, setInitialized] = useState(false);
 
-    useEffect(() => {
-        try { // expose for legacy code if needed
+    // helper to set token both in state and window var for existing code
+    function setAccessToken(token: string | null) {
+        setAccessTokenState(token);
+        try {
             // @ts-ignore
-            window.__ACCESS_TOKEN__ = accessToken ?? undefined;
+            window.__ACCESS_TOKEN__ = token;
+            window.dispatchEvent(new CustomEvent('accessTokenUpdated', { detail: token }));
         } catch {}
-    }, [accessToken]);
+    }
 
     useEffect(() => {
-        if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
-        if (!accessToken) return;
-        const expiry = parseJwtExpiry(accessToken);
-        if (!expiry) return;
-        const now = Date.now();
-        const refreshAt = Math.max(0, expiry - now - 30_000);
-        const timeout = refreshAt > 0 ? refreshAt : 1000;
-        refreshTimerRef.current = window.setTimeout(async () => {
-            await attemptRefreshWithRetries();
-        }, timeout);
-        return () => { if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; } };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [accessToken]);
-
-    // Try refresh on mount (so F5 can restore session if refresh cookie present)
-    useEffect(() => {
+        let mounted = true;
         (async () => {
-            await attemptRefreshWithRetries(2, 800);
+            try {
+                const r = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
+                if (!mounted) return;
+                if (r.ok) {
+                    const json = await r.json().catch(() => ({}));
+                    const newToken = json.accessToken ?? null;
+                    if (newToken) setAccessToken(newToken);
+                } else {
+                    setAccessToken(null);
+                }
+            } catch (err) {
+                console.error('AuthProvider refresh error', err);
+                setAccessToken(null);
+            } finally {
+                if (mounted) setInitialized(true);
+            }
         })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        return () => {
+            mounted = false;
+        };
     }, []);
 
-    // Safe refresh: do not throw on non-200; return boolean success
-    async function attemptRefreshWithRetries(retries = 2, delayMs = 1000): Promise<boolean> {
-        if (refreshingRef.current) return false;
-        refreshingRef.current = true;
+    async function login(email: string, password: string) {
         try {
-            for (let i = 0; i <= retries; i++) {
-                try {
-                    // Call our Next API proxy (ensure it exists)
-                    const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
-                    // DEBUG: log status for easier debugging
-                    // eslint-disable-next-line no-console
-                    console.debug('refresh response status', res.status);
-                    if (!res.ok) {
-                        // 401/400 indicates invalid refresh; we must clear token
-                        if (res.status === 401 || res.status === 400) {
-                            setAccessToken(null);
-                            refreshingRef.current = false;
-                            return false;
-                        }
-                        // other statuses: retry if we can, else stop
-                        if (i < retries) {
-                            await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
-                            continue;
-                        } else {
-                            // final failure -> do not throw, just return false
-                            const text = await res.text().catch(() => '');
-                            // eslint-disable-next-line no-console
-                            console.warn('Refresh failed final:', res.status, text);
-                            refreshingRef.current = false;
-                            return false;
-                        }
-                    }
-                    const data = await res.json().catch(() => ({}));
-                    const newToken = data?.accessToken ?? null;
-                    if (newToken) {
-                        setAccessToken(newToken);
-                        try {
-                            // @ts-ignore
-                            window.__ACCESS_TOKEN__ = newToken;
-                            window.dispatchEvent(new CustomEvent('accessTokenUpdated', { detail: newToken }));
-                        } catch {}
-                        refreshingRef.current = false;
-                        return true;
-                    } else {
-                        // backend returned 200 but no accessToken — treat as failure
-                        // eslint-disable-next-line no-console
-                        console.warn('Refresh returned 200 but no accessToken', data);
-                        refreshingRef.current = false;
-                        return false;
-                    }
-                } catch (err) {
-                    // network error -> retry if attempts remain
-                    // eslint-disable-next-line no-console
-                    console.warn('Refresh attempt error', err, 'attempt', i);
-                    if (i < retries) {
-                        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
-                        continue;
-                    } else {
-                        refreshingRef.current = false;
-                        return false;
-                    }
-                }
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include', // important if backend sets refresh cookie
+                body: JSON.stringify({ email, password }),
+            });
+            const text = await res.text().catch(() => '');
+            let json: any = {};
+            try { json = text ? JSON.parse(text) : {}; } catch {}
+            if (!res.ok) {
+                const msg = json?.message ?? text ?? `HTTP ${res.status}`;
+                return { ok: false, message: msg };
             }
-            refreshingRef.current = false;
-            return false;
-        } finally {
-            refreshingRef.current = false;
+            const token = json.accessToken ?? null;
+            if (token) setAccessToken(token);
+            return { ok: true };
+        } catch (err: any) {
+            console.error('login error', err);
+            return { ok: false, message: String(err?.message ?? err) };
         }
     }
 
-    const login = async (email: string, password: string) => {
-        const res = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
-            credentials: 'include',
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({ message: 'Login failed' }));
-            throw new Error(err.message || 'Login failed');
-        }
-        const data = await res.json().catch(() => ({}));
-        const token = data.accessToken ?? null;
+    function loginWithToken(token: string) {
         setAccessToken(token);
-    };
+    }
 
-    const logout = async () => {
-        try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }); } catch {}
-        setAccessToken(null);
-        try { // @ts-ignore
-            window.__ACCESS_TOKEN__ = undefined;
-        } catch {}
-    };
+    async function logout() {
+        try {
+            await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+        } catch (e) {
+            console.error('logout error', e);
+        } finally {
+            setAccessToken(null);
+        }
+    }
 
-    const register = async (email: string, password: string) => {
-        const res = await fetch('/api/auth/registration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
-        if (!res.ok) { const err = await res.json().catch(() => ({ message: 'Registration failed' })); throw new Error(err.message || 'Registration failed'); }
-    };
-
-    const changePassword = async (currentPassword: string, newPassword: string) => {
+    const changePassword = async (payload: { currentPassword: string; newPassword: string }) => {
         const token = accessToken;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch('/api/auth/change-password', { method: 'POST', headers, body: JSON.stringify({ password: currentPassword, newPassword }), credentials: 'include' });
+        const res = await fetch('/api/auth/change-password', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ password: payload.currentPassword, newPassword: payload.newPassword }),
+            credentials: 'include',
+        });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ message: 'Change password failed' }));
             throw new Error(err.message || 'Change password failed');
@@ -174,14 +120,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const token = accessToken;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch('/api/auth/change-email', { method: 'POST', headers, body: JSON.stringify({ email: newEmail }), credentials: 'include' });
+        const res = await fetch('/api/auth/change-email', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ email: newEmail }),
+            credentials: 'include',
+        });
         if (!res.ok) {
             const err = await res.json().catch(() => ({ message: 'Change email failed' }));
             throw new Error(err.message || 'Change email failed');
         }
     };
 
-    const value = useMemo(() => ({ accessToken, login, logout, register, changePassword, changeEmail, isAuthenticated: !!accessToken }), [accessToken]);
+    const value: AuthContextValue = {
+        accessToken,
+        initialized,
+        setAccessToken,
+        login,
+        loginWithToken,
+        changePassword,
+        changeEmail,
+        logout,
+    };
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-};
+}
