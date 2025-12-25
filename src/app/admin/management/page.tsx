@@ -24,30 +24,47 @@ export default function AdminManagementPage() {
             return false;
         }
     }
+    const admin = isAdmin(accessToken);
 
     return (
         <div style={{ padding: 24 }}>
-            <h1>Panel administratora — Zarządzanie</h1>
+            <h1 style={{ margin: 0, fontSize: 32, color: '#0f172a' }}>Panel administratora — Zarządzanie</h1>
 
-            <div style={{ marginTop: 16, display: 'flex', gap: 12 }}>
-                {isAdmin(accessToken) ? (
-                    <Link href="/admin/profiles">
-                        <button style={{
-                            padding: '10px 14px',
-                            background: '#4f46e5',
-                            color: '#fff',
-                            border: 'none',
-                            borderRadius: 8,
-                            cursor: 'pointer'
-                        }}>
-                            Zarządzaj profilami
-                        </button>
-                    </Link>
+            <div style={{ marginTop: 24, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {admin ? (
+                    <>
+                        <Link href="/admin/profiles" >
+                            <button style={{
+                                display: 'inline-block',
+                                padding: '10px 14px',
+                                background: '#4f46e5',
+                                color: '#fff',
+                                borderRadius: 8,
+                                textDecoration: 'none',
+                                fontWeight: 700
+                            }}>
+                                Zarządzaj profilami
+                            </button>
+                        </Link>
+
+                        <Link href="/admin/etl" >
+                            <button style={{
+                                display: 'inline-block',
+                                padding: '10px 14px',
+                                background: 'linear-gradient(90deg,#06b6d4,#0ea5a4)',
+                                color: '#fff',
+                                borderRadius: 8,
+                                textDecoration: 'none',
+                                fontWeight: 700
+                            }}>
+                                Zarządzaj ETL (artykuły / monografie)
+                            </button>
+                        </Link>
+
+                    </>
                 ) : (
-                    <div style={{ color: '#9ca3af' }}>Musisz mieć uprawnienia administratora, aby zarządzać profilami.</div>
+                    <div style={{ color: '#9ca3af' }}>Musisz mieć uprawnienia administratora, aby korzystać z panelu zarządzania.</div>
                 )}
-
-                {/* inne przyciski panelu admin */}
             </div>
         </div>
     );
