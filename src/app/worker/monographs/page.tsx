@@ -93,7 +93,7 @@ type MonographListItem = {
     title?: string | null;
     doi?: string | null;
     isbn?: string | null;
-    monograficPublisherTitle?: string | null;
+    monograficTitle?: string | null;
     publicationYear?: number | null;
 
     type?: RefItem | null;
@@ -511,7 +511,7 @@ export default function WorkerMonographsPage() {
                                                 </div>
 
                                                 <div className={styles.muted} style={{ fontWeight: 900, marginTop: 2 }}>
-                                                    {safeStr(it?.monograficPublisherTitle)}
+                                                    {safeStr(it?.monograficTitle)}
                                                 </div>
 
                                                 <div className={styles.muted} style={{ marginTop: 6 }}>
