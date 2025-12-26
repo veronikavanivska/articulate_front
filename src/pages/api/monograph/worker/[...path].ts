@@ -1,3 +1,4 @@
+// pages/api/monograph/worker/[...path].ts
 import type { NextApiRequest, NextApiResponse } from 'next';
 import http from 'http';
 import https from 'https';
@@ -5,14 +6,9 @@ import { URL } from 'url';
 
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
-const GET_WITH_BODY = new Set([
-    // u Ciebie w backendzie to są @GetMapping z @RequestBody
-    'listDisciplines',
-    'listTypes',
-    'listEvalCycles',
-    'listPublication',
-    'getPublication',
-]);
+// Dla /monograph/worker listy są POST, więc GET-with-body raczej nie jest potrzebny,
+// ale zostawiam mechanizm kompatybilności jak w Twoim przykładzie.
+const GET_WITH_BODY = new Set<string>([]);
 
 function copyBackendHeadersToRes(res: NextApiResponse, backendHeaders: Record<string, any>) {
     for (const [k, v] of Object.entries(backendHeaders)) {
@@ -69,7 +65,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const qs = req.url?.split('?')[1] ?? '';
 
     // wymagane przez Ciebie w każdym pliku:
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+    };
     if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
     if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
@@ -79,23 +78,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (parts.length === 0) return res.status(400).json({ message: 'Missing path' });
 
         const leaf = parts[parts.length - 1];
+
         const backendBase = API_GATEWAY.replace(/\/$/, '');
-        const backendUrl = `${backendBase}/article/admin/${parts.map(encodeURIComponent).join('/')}${qs ? `?${qs}` : ''}`;
+        // API Gateway: /monograph/worker/<...>
+        const backendUrl = `${backendBase}/monograph/worker/${parts.map(encodeURIComponent).join('/')}${
+            qs ? `?${qs}` : ''
+        }`;
 
-        // body -> string (dla GET-with-body też)
         const bodyStr =
-            req.body == null
-                ? ''
-                : typeof req.body === 'string'
-                    ? req.body
-                    : JSON.stringify(req.body);
+            req.body == null ? '' : typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
 
-        // Jeżeli frontend wyśle POST (bo authFetch i wygodniej),
-        // a backend ma GET+@RequestBody, to tu robimy GET z body niskopoziomowo:
         const shouldDoGetWithBody = req.method === 'POST' && GET_WITH_BODY.has(leaf);
-
         if (shouldDoGetWithBody) {
-            const out = await requestRaw(backendUrl, 'POST', headers, bodyStr || '{}');
+            const out = await requestRaw(backendUrl, 'GET', headers, bodyStr || '{}');
             res.status(out.status);
             copyBackendHeadersToRes(res, out.headers);
 
@@ -110,13 +105,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             return res.send(out.body);
         }
 
-        // standardowe proxy: metoda taka jak przyszła (GET/POST/PATCH/DELETE)
         const method = (req.method || 'GET').toUpperCase();
 
         const backendRes = await fetch(backendUrl, {
             method,
             headers,
-            body: method === 'GET' || method === 'HEAD' ? undefined : (bodyStr || undefined),
+            body: method === 'GET' || method === 'HEAD' ? undefined : bodyStr || undefined,
         } as any);
 
         const text = await backendRes.text().catch(() => '');
@@ -138,7 +132,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         return res.send(text);
     } catch (err: any) {
-        console.error('[proxy/article/admin] error', err);
+        console.error('[api/monograph/worker] error', err);
         return res.status(500).json({ message: 'Proxy failed', error: String(err?.message ?? err) });
     }
 }

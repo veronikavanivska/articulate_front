@@ -167,7 +167,7 @@ export default function DashboardPage() {
 
                     {/* Worker tile - only render if user has worker */}
                     {hasWorker && (
-                        <Tile title="Panel pracownika" description="Przeglądaj i zarządzaj swoimi monografiami i publikacjami." onClick={() => router.push('/worker/dashboard')} accent="#0ea5a4" emoji="📚" />
+                        <Tile title="Panel pracownika" description="Przeglądaj i zarządzaj swoimi monografiami i publikacjami." onClick={() => router.push('/worker/management')} accent="#0ea5a4" emoji="📚" />
                     )}
                 </div>
             </div>

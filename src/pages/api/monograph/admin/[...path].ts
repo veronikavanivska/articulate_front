@@ -90,7 +90,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const shouldDoGetWithBody = req.method === 'POST' && GET_WITH_BODY.has(leaf);
 
         if (shouldDoGetWithBody) {
-            const out = await requestRaw(backendUrl, 'GET', headers, bodyStr || '{}');
+            const out = await requestRaw(backendUrl, 'POST', headers, bodyStr || '{}');
             res.status(out.status);
             copyBackendHeadersToRes(res, out.headers);
 

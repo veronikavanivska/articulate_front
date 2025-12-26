@@ -199,9 +199,12 @@ function FieldRow(props: { label: string; value: React.ReactNode }) {
     );
 }
 
+function norm(v: any) {
+    return String(v ?? '').toLowerCase().trim();
+}
+
 // ===================== SEARCHABLE DROPDOWN (żeby lista NIE wychodziła za ramkę) =====================
 type Option = { id: number; label: string };
-
 function SearchSelect(props: {
     label: string;
     value: number;
@@ -222,9 +225,9 @@ function SearchSelect(props: {
     }, [options, value, placeholder]);
 
     const filtered = useMemo(() => {
-        const nq = String(q ?? '').toLowerCase().trim();
+        const nq = norm(q);
         if (!nq) return options;
-        return options.filter((o) => String(o.label ?? '').toLowerCase().includes(nq));
+        return options.filter((o) => norm(o.label).includes(nq));
     }, [options, q]);
 
     useEffect(() => {
@@ -278,7 +281,13 @@ function SearchSelect(props: {
                     }}
                 >
                     <div style={{ padding: 10, borderBottom: '1px solid var(--border)' }}>
-                        <input className={styles.searchInput} placeholder="Szukaj…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+                        <input
+                            className={styles.searchInput}
+                            placeholder="Szukaj…"
+                            value={q}
+                            onChange={(e) => setQ(e.target.value)}
+                            autoFocus
+                        />
                     </div>
 
                     <div style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -343,6 +352,18 @@ export default function AdminPublicationsPage() {
     const [monographs, setMonographs] = useState<MonographViewResponse[]>([]);
     const [chapters, setChapters] = useState<ChapterViewResponse[]>([]);
 
+    // Szukajka UI (BEZ backendu) — osobno per zakładka
+    const [qArticles, setQArticles] = useState('');
+    const [qMonographs, setQMonographs] = useState('');
+    const [qChapters, setQChapters] = useState('');
+
+    const activeQuery = tab === 'articles' ? qArticles : tab === 'monographs' ? qMonographs : qChapters;
+    const setActiveQuery = (v: string) => {
+        if (tab === 'articles') setQArticles(v);
+        else if (tab === 'monographs') setQMonographs(v);
+        else setQChapters(v);
+    };
+
     // Modal szczegółów
     const [detailsOpen, setDetailsOpen] = useState(false);
     const [detailsLoading, setDetailsLoading] = useState(false);
@@ -350,7 +371,7 @@ export default function AdminPublicationsPage() {
     const [detailsData, setDetailsData] = useState<any>(null);
     const [detailsKind, setDetailsKind] = useState<'article' | 'monograph' | 'chapter'>('article');
 
-    // request body: bez sortBy
+    // request body: bez sortBy (sortDir zostawiam jeśli backend tego oczekuje)
     const requestBase = useMemo(
         () => ({
             disciplineId: toIntOr0(disciplineId),
@@ -534,11 +555,37 @@ export default function AdminPublicationsPage() {
         }
     }
 
-    const listCount = useMemo(() => {
-        if (tab === 'articles') return articles.length;
-        if (tab === 'monographs') return monographs.length;
-        return chapters.length;
-    }, [tab, articles.length, monographs.length, chapters.length]);
+    // ====== SZUKAJKA UI — TYLKO PO NAZWIE/TYTULE ======
+    const filteredArticles = useMemo(() => {
+        const q = norm(qArticles);
+        if (!q) return articles;
+        return articles.filter((a) => norm(a?.title).includes(q));
+    }, [articles, qArticles]);
+
+    const filteredMonographs = useMemo(() => {
+        const q = norm(qMonographs);
+        if (!q) return monographs;
+        return monographs.filter((m) => norm(m?.title).includes(q));
+    }, [monographs, qMonographs]);
+
+    const filteredChapters = useMemo(() => {
+        const q = norm(qChapters);
+        if (!q) return chapters;
+        return chapters.filter((c) => norm(c?.monograficChapterTitle ?? c?.monograficTitle).includes(q));
+    }, [chapters, qChapters]);
+
+    const visibleCount = useMemo(() => {
+        if (tab === 'articles') return filteredArticles.length;
+        if (tab === 'monographs') return filteredMonographs.length;
+        return filteredChapters.length;
+    }, [tab, filteredArticles.length, filteredMonographs.length, filteredChapters.length]);
+
+    const detailsCoauthors: Coauthor[] = useMemo(() => normalizeCoauthors(detailsData), [detailsData]);
+    const detailsOwnerName = useMemo(() => {
+        if (!detailsData) return '—';
+        const ownerId = Number(detailsData?.ownerId ?? detailsData?.authorId ?? 0);
+        return pickOwnerName(ownerId, detailsCoauthors);
+    }, [detailsData, detailsCoauthors]);
 
     const disciplineOptions: Option[] = useMemo(() => {
         return [{ id: 0, label: '— dowolna —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))];
@@ -548,12 +595,12 @@ export default function AdminPublicationsPage() {
         return [{ id: 0, label: '— dowolny —' }, ...cycles.map((c) => ({ id: c.id, label: cycleLabel(c) }))];
     }, [cycles]);
 
-    const detailsCoauthors: Coauthor[] = useMemo(() => normalizeCoauthors(detailsData), [detailsData]);
-    const detailsOwnerName = useMemo(() => {
-        if (!detailsData) return '—';
-        const ownerId = Number(detailsData?.ownerId ?? detailsData?.authorId ?? 0);
-        return pickOwnerName(ownerId, detailsCoauthors);
-    }, [detailsData, detailsCoauthors]);
+    const searchPlaceholder =
+        tab === 'articles'
+            ? 'Szukaj po tytule artykułu (aktualna strona)…'
+            : tab === 'monographs'
+                ? 'Szukaj po tytule monografii (aktualna strona)…'
+                : 'Szukaj po tytule rozdziału (aktualna strona)…';
 
     if (!initialized) return <div className={styles.page}>Ładowanie…</div>;
 
@@ -588,13 +635,13 @@ export default function AdminPublicationsPage() {
                         <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
                             Błąd: {itemsError}
                         </div>
-                    ) : listCount === 0 ? (
-                        <div className={styles.empty}>Brak danych</div>
+                    ) : visibleCount === 0 ? (
+                        <div className={styles.empty}>{activeQuery.trim() ? `Brak wyników dla: "${activeQuery.trim()}".` : 'Brak danych'}</div>
                     ) : (
                         <div className={styles.cardsGrid}>
                             {/* ====== ARTYKUŁY ====== */}
                             {tab === 'articles' &&
-                                articles.map((a) => {
+                                filteredArticles.map((a) => {
                                     const co = normalizeCoauthors(a);
                                     const authorName = pickOwnerName(a.ownerId, co);
                                     const preview = co.filter((x) => x.fullName).slice(0, 3);
@@ -646,7 +693,7 @@ export default function AdminPublicationsPage() {
 
                             {/* ====== MONOGRAFIE ====== */}
                             {tab === 'monographs' &&
-                                monographs.map((m) => {
+                                filteredMonographs.map((m) => {
                                     const co = normalizeCoauthors(m);
                                     const authorName = pickOwnerName(m.authorId, co);
                                     const preview = co.filter((x) => x.fullName).slice(0, 3);
@@ -698,7 +745,7 @@ export default function AdminPublicationsPage() {
 
                             {/* ====== ROZDZIAŁY ====== */}
                             {tab === 'chapters' &&
-                                chapters.map((c) => {
+                                filteredChapters.map((c) => {
                                     const co = normalizeCoauthors(c);
                                     const authorName = pickOwnerName(c.authorId, co);
                                     const preview = co.filter((x) => x.fullName).slice(0, 3);
@@ -782,6 +829,37 @@ export default function AdminPublicationsPage() {
                         <h3 style={{ marginBottom: 10 }}>Filtry</h3>
 
                         <div style={{ display: 'grid', gap: 12 }}>
+                            {/* SZUKAJKA UI (bez backendu) — NAPRAWIONY LAYOUT */}
+                {/*            <div style={{ display: 'grid', gap: 6 }}>*/}
+                {/*<span className={styles.muted} style={{ fontWeight: 800 }}>*/}
+                {/*  Szukaj po tytule (tylko aktualna strona)*/}
+                {/*</span>*/}
+
+                {/*                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>*/}
+                {/*                    <input*/}
+                {/*                        className={styles.searchInput}*/}
+                {/*                        type="search"*/}
+                {/*                        placeholder={searchPlaceholder}*/}
+                {/*                        value={activeQuery}*/}
+                {/*                        onChange={(e) => setActiveQuery(e.target.value)}*/}
+                {/*                        style={{ flex: '1 1 260px', minWidth: 0, width: 'auto' }}*/}
+                {/*                    />*/}
+                {/*                    <button*/}
+                {/*                        className={styles.ghostBtn}*/}
+                {/*                        onClick={() => setActiveQuery('')}*/}
+                {/*                        disabled={!activeQuery.trim()}*/}
+                {/*                        style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}*/}
+                {/*                    >*/}
+                {/*                        Wyczyść*/}
+                {/*                    </button>*/}
+                {/*                </div>*/}
+
+                {/*                <div className={styles.muted} style={{ fontSize: 12 }}>*/}
+                {/*                    To wyszukiwanie nie wysyła requestów do backendu — filtruje tylko pobraną stronę.*/}
+                {/*                </div>*/}
+                {/*            </div>*/}
+
+                            {/* DYSYCPLINA */}
                             <SearchSelect
                                 label="Dyscyplina"
                                 value={disciplineId}
@@ -791,6 +869,7 @@ export default function AdminPublicationsPage() {
                                 onChange={(id) => setDisciplineId(Number(id) || 0)}
                             />
 
+                            {/* CYKL */}
                             <SearchSelect
                                 label="Cykl"
                                 value={cycleId}
