@@ -2,11 +2,19 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
-/**
- * Proxy: DELETE /api/etl/admin/deleteMeinVersion?versionId=...
- * Forwards to backend DELETE /etl/admin/deleteMeinVersion?versionId=...
- * Accepts versionId either as query param or in JSON body { versionId: ... }.
- */
+function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
+    const anyHeaders = backendRes.headers as any;
+    const setCookies: string[] = anyHeaders.getSetCookie?.() ?? [];
+    if (setCookies.length) res.setHeader('Set-Cookie', setCookies);
+
+    backendRes.headers.forEach((v, k) => {
+        const lk = k.toLowerCase();
+        if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
+        if (lk === 'set-cookie') return;
+        res.setHeader(k, v);
+    });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'DELETE') {
         res.setHeader('Allow', ['DELETE']);
@@ -14,45 +22,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-        const versionIdFromQuery = String(req.query.versionId ?? '').trim();
-        const versionIdFromBody = req.body && (req.body.versionId ?? req.body.version_id) ? String(req.body.versionId ?? req.body.version_id) : '';
-        const versionId = versionIdFromQuery || versionIdFromBody;
+        const qs = req.url?.split('?')[1] ?? '';
+        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/deleteMeinVersion${qs ? `?${qs}` : ''}`;
+        console.log('[proxy/deleteMeinVersion] ->', target);
 
-        if (!versionId) {
-            return res.status(400).json({ message: 'versionId is required (query param or JSON body)' });
-        }
-
-        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/deleteMeinVersion?versionId=${encodeURIComponent(versionId)}`;
-        console.log('[proxy/deleteMeinVersion] forwarding to', target);
-
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+            Accept: 'application/json',
+        };
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
-        const backendRes = await fetch(target, {
-            method: 'DELETE',
-            headers,
-        });
+        const backendRes = await fetch(target, { method: 'DELETE', headers });
 
         const text = await backendRes.text().catch(() => '');
-        const ct = backendRes.headers.get('content-type') || '';
-
+        copyResponseHeaders(backendRes, res);
         res.status(backendRes.status);
-        backendRes.headers.forEach((v, k) => {
-            const lk = k.toLowerCase();
-            if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
-            res.setHeader(k, v);
-        });
 
+        const ct = backendRes.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
             try {
-                const json = JSON.parse(text);
-                return res.json(json);
+                return res.json(JSON.parse(text));
             } catch {
                 return res.send(text);
             }
         }
-
         return res.send(text);
     } catch (err: any) {
         console.error('[proxy/deleteMeinVersion] error', err);

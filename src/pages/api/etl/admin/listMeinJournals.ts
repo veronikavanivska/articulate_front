@@ -2,10 +2,19 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
-/**
- * Proxy: POST /api/etl/admin/listMeinJournals
- * Forwards JSON body to backend /etl/admin/listMeinJournals and returns JSON.
- */
+function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
+    const anyHeaders = backendRes.headers as any;
+    const setCookies: string[] = anyHeaders.getSetCookie?.() ?? [];
+    if (setCookies.length) res.setHeader('Set-Cookie', setCookies);
+
+    backendRes.headers.forEach((v, k) => {
+        const lk = k.toLowerCase();
+        if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
+        if (lk === 'set-cookie') return;
+        res.setHeader(k, v);
+    });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') {
         res.setHeader('Allow', ['POST']);
@@ -13,33 +22,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/listMeinJournals`;
-        console.log('[proxy/listMeinJournals] forwarding to', target);
+        const qs = req.url?.split('?')[1] ?? '';
+        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/listMeinJournals${qs ? `?${qs}` : ''}`;
+        console.log('[proxy/listMeinJournals] ->', target);
 
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+        };
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
+
+        const body = req.body ?? {};
+        const versionId = Number(body.versionId ?? body.version_id ?? 0);
+        const page = Number(body.page ?? 0);
+        const size = Number(body.size ?? 20);
+        const sortDir = String(body.sortDir ?? 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
+        if (!versionId) return res.status(400).json({ message: 'versionId is required' });
 
         const backendRes = await fetch(target, {
             method: 'POST',
             headers,
-            body: JSON.stringify(req.body ?? {}),
+            body: JSON.stringify({ versionId, page, size, sortDir }),
         });
 
         const text = await backendRes.text().catch(() => '');
-        const ct = backendRes.headers.get('content-type') || '';
-
+        copyResponseHeaders(backendRes, res);
         res.status(backendRes.status);
-        backendRes.headers.forEach((v, k) => {
-            const lk = k.toLowerCase();
-            if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
-            res.setHeader(k, v);
-        });
 
+        const ct = backendRes.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
             try {
                 const json = JSON.parse(text);
-                return res.json(json);
+                const items = json?.items ?? json?.meinJournals ?? [];
+                return res.json({ ...json, items, meinJournals: items });
             } catch {
                 return res.send(text);
             }

@@ -1,9 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-export const config = {
-    api: { bodyParser: false },
-};
-
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
 function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
@@ -19,18 +15,6 @@ function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
     });
 }
 
-async function readRawBodyAsArrayBuffer(req: NextApiRequest): Promise<ArrayBuffer> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req as any) {
-        if (Buffer.isBuffer(chunk)) chunks.push(chunk);
-        else chunks.push(Buffer.from(chunk));
-    }
-    const buf = Buffer.concat(chunks);
-
-    // klucz: ArrayBuffer, nie Buffer/Uint8Array
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') {
         res.setHeader('Allow', ['POST']);
@@ -39,20 +23,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         const qs = req.url?.split('?')[1] ?? '';
-        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/import${qs ? `?${qs}` : ''}`;
-        console.log('[proxy/import] ->', target);
+        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/listMeinMonoVersions${qs ? `?${qs}` : ''}`;
+        console.log('[proxy/listMeinMonoVersions] ->', target);
 
-        const headers: Record<string, string> = { Accept: 'application/json' };
+        const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
-        if (req.headers['content-type']) headers['Content-Type'] = String(req.headers['content-type']);
 
-        const body = await readRawBodyAsArrayBuffer(req);
+        const body = req.body ?? {};
+        const page = Number(body.page ?? 0);
+        const size = Number(body.size ?? 20);
+        const sortDir = String(body.sortDir ?? 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
         const backendRes = await fetch(target, {
             method: 'POST',
             headers,
-            body, // ArrayBuffer
+            body: JSON.stringify({ page, size, sortDir }),
         });
 
         const text = await backendRes.text().catch(() => '');
@@ -62,14 +48,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const ct = backendRes.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
             try {
-                return res.json(JSON.parse(text));
+                const json = JSON.parse(text);
+                // backend: { items: [...], pageMeta: ... }
+                const items = json?.items ?? json?.item ?? [];
+                return res.json({ ...json, items });
             } catch {
                 return res.send(text);
             }
         }
+
         return res.send(text);
     } catch (err: any) {
-        console.error('[proxy/import] error', err);
+        console.error('[proxy/listMeinMonoVersions] error', err);
         return res.status(500).json({ message: 'Proxy failed', error: String(err?.message ?? err) });
     }
 }

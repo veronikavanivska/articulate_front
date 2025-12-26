@@ -254,3 +254,56 @@
 .dangerBtn[disabled] { opacity: .6; cursor: not-allowed; box-shadow: none; transform: none; }
 /* disabled state for action buttons — global element selector wrapped */
 :global(button[disabled]), .primaryBtn[disabled] { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+
+/* ===== ETL modals ===== */
+.modalOverlay{
+    position: fixed;
+    inset: 0;
+    background: rgba(15,23,42,0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 1000;
+}
+.modalCard{
+    width: min(980px, 96vw);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-strong);
+    padding: 18px;
+}
+.modalHeader{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.modalTitle{
+    margin: 0;
+    font-size: 18px;
+    font-weight: 900;
+}
+
+/* details grid */
+.kvGrid{
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 10px 14px;
+}
+.kvKey{
+    color: var(--muted);
+    font-weight: 800;
+}
+.kvVal{
+    color: var(--text);
+    font-weight: 700;
+    word-break: break-word;
+}
+@media (max-width: 720px){
+    .kvGrid{ grid-template-columns: 1fr; }
+}

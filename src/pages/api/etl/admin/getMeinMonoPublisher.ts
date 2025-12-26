@@ -1,9 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-export const config = {
-    api: { bodyParser: false },
-};
-
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
 function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
@@ -19,41 +15,22 @@ function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
     });
 }
 
-async function readRawBodyAsArrayBuffer(req: NextApiRequest): Promise<ArrayBuffer> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req as any) {
-        if (Buffer.isBuffer(chunk)) chunks.push(chunk);
-        else chunks.push(Buffer.from(chunk));
-    }
-    const buf = Buffer.concat(chunks);
-
-    // klucz: ArrayBuffer, nie Buffer/Uint8Array
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-    if (req.method !== 'POST') {
-        res.setHeader('Allow', ['POST']);
+    if (req.method !== 'GET') {
+        res.setHeader('Allow', ['GET']);
         return res.status(405).end('Method Not Allowed');
     }
 
     try {
         const qs = req.url?.split('?')[1] ?? '';
-        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/import${qs ? `?${qs}` : ''}`;
-        console.log('[proxy/import] ->', target);
+        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/getMeinMonoPublisher${qs ? `?${qs}` : ''}`;
+        console.log('[proxy/getMeinMonoPublisher] ->', target);
 
         const headers: Record<string, string> = { Accept: 'application/json' };
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
-        if (req.headers['content-type']) headers['Content-Type'] = String(req.headers['content-type']);
 
-        const body = await readRawBodyAsArrayBuffer(req);
-
-        const backendRes = await fetch(target, {
-            method: 'POST',
-            headers,
-            body, // ArrayBuffer
-        });
+        const backendRes = await fetch(target, { method: 'GET', headers });
 
         const text = await backendRes.text().catch(() => '');
         copyResponseHeaders(backendRes, res);
@@ -61,15 +38,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const ct = backendRes.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
-            try {
-                return res.json(JSON.parse(text));
-            } catch {
-                return res.send(text);
-            }
+            try { return res.json(JSON.parse(text)); } catch { return res.send(text); }
         }
         return res.send(text);
     } catch (err: any) {
-        console.error('[proxy/import] error', err);
+        console.error('[proxy/getMeinMonoPublisher] error', err);
         return res.status(500).json({ message: 'Proxy failed', error: String(err?.message ?? err) });
     }
 }

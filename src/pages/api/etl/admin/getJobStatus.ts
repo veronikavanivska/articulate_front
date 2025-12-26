@@ -2,10 +2,19 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
-/**
- * Proxy: GET /api/etl/admin/getJobStatus?jobId=...
- * Forwards to backend GET /etl/admin/getJobStatus?jobId=...
- */
+function copyResponseHeaders(backendRes: Response, res: NextApiResponse) {
+    const anyHeaders = backendRes.headers as any;
+    const setCookies: string[] = anyHeaders.getSetCookie?.() ?? [];
+    if (setCookies.length) res.setHeader('Set-Cookie', setCookies);
+
+    backendRes.headers.forEach((v, k) => {
+        const lk = k.toLowerCase();
+        if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
+        if (lk === 'set-cookie') return;
+        res.setHeader(k, v);
+    });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'GET') {
         res.setHeader('Allow', ['GET']);
@@ -13,42 +22,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-        const jobId = String(req.query.jobId ?? '').trim();
-        if (!jobId) {
-            return res.status(400).json({ message: 'jobId query param is required' });
-        }
+        const qs = req.url?.split('?')[1] ?? '';
+        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/getJobStatus${qs ? `?${qs}` : ''}`;
+        console.log('[proxy/getJobStatus] ->', target);
 
-        const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/getJobStatus?jobId=${encodeURIComponent(jobId)}`;
-        console.log('[proxy/getJobStatus] forwarding to', target);
-
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+            Accept: 'application/json',
+        };
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
-        const backendRes = await fetch(target, {
-            method: 'GET',
-            headers,
-        });
+        const backendRes = await fetch(target, { method: 'GET', headers });
 
         const text = await backendRes.text().catch(() => '');
-        const ct = backendRes.headers.get('content-type') || '';
-
+        copyResponseHeaders(backendRes, res);
         res.status(backendRes.status);
-        backendRes.headers.forEach((v, k) => {
-            const lk = k.toLowerCase();
-            if (['transfer-encoding', 'content-encoding', 'connection'].includes(lk)) return;
-            res.setHeader(k, v);
-        });
 
+        const ct = backendRes.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
             try {
-                const json = JSON.parse(text);
-                return res.json(json);
+                return res.json(JSON.parse(text));
             } catch {
                 return res.send(text);
             }
         }
-
         return res.send(text);
     } catch (err: any) {
         console.error('[proxy/getJobStatus] error', err);

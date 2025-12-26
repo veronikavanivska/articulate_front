@@ -4,7 +4,6 @@ const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
 /**
  * Proxy: GET /api/etl/admin/meinVersion?versionId=...
- * Forwards to backend /etl/admin/meinVersion?versionId=...
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'GET') {
@@ -12,11 +11,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(405).end('Method Not Allowed');
     }
 
+
     try {
-        const versionId = String(req.query.versionId ?? '');
-        if (!versionId) {
-            return res.status(400).json({ message: 'versionId query param is required' });
-        }
+
+
+        const versionId = String(req.query.versionId ?? '').trim();
+        if (!versionId) return res.status(400).json({ message: 'versionId is required (query param)' });
 
         const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/meinVersion?versionId=${encodeURIComponent(versionId)}`;
         console.log('[proxy/meinVersion] forwarding to', target);
@@ -25,10 +25,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
-        const backendRes = await fetch(target, {
-            method: 'GET',
-            headers,
-        });
+        const backendRes = await fetch(target, { method: 'GET', headers });
 
         const text = await backendRes.text().catch(() => '');
         const ct = backendRes.headers.get('content-type') || '';
@@ -42,8 +39,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (ct.includes('application/json')) {
             try {
-                const json = JSON.parse(text);
-                return res.json(json);
+                return res.json(JSON.parse(text));
             } catch {
                 return res.send(text);
             }

@@ -1,10 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-/**
- * Proxy for GET /api/etl/admin/activeMeinVersion
- * Forwards to backend /etl/admin/activeMeinVersion
- */
-
 const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -21,10 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
-        const backendRes = await fetch(target, {
-            method: 'GET',
-            headers,
-        });
+        const backendRes = await fetch(target, { method: 'GET', headers });
 
         const text = await backendRes.text().catch(() => '');
         const ct = backendRes.headers.get('content-type') || '';
@@ -38,8 +30,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (ct.includes('application/json')) {
             try {
-                const json = JSON.parse(text);
-                return res.json(json);
+                return res.json(JSON.parse(text));
             } catch {
                 return res.send(text);
             }

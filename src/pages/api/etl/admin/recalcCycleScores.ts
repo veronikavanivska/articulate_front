@@ -4,8 +4,7 @@ const API_GATEWAY = process.env.API_GATEWAY_URL || 'http://localhost:8888';
 
 /**
  * Proxy: POST /api/etl/admin/recalcCycleScores?cycleId=...
- * Forwards to backend POST /etl/admin/recalcCycleScores?cycleId=...
- * Accepts cycleId either as query param or in JSON body { cycleId: ... }.
+ * Accepts cycleId as query param OR JSON body { cycleId }.
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') {
@@ -14,13 +13,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
+
         const cycleIdFromQuery = String(req.query.cycleId ?? '').trim();
         const cycleIdFromBody = req.body && (req.body.cycleId ?? req.body.cycle_id) ? String(req.body.cycleId ?? req.body.cycle_id) : '';
         const cycleId = cycleIdFromQuery || cycleIdFromBody;
 
-        if (!cycleId) {
-            return res.status(400).json({ message: 'cycleId is required (query param or JSON body)' });
-        }
+        if (!cycleId) return res.status(400).json({ message: 'cycleId is required (query param or JSON body)' });
 
         const target = `${API_GATEWAY.replace(/\/$/, '')}/etl/admin/recalcCycleScores?cycleId=${encodeURIComponent(cycleId)}`;
         console.log('[proxy/recalcCycleScores] forwarding to', target);
@@ -29,10 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (req.headers.authorization) headers['Authorization'] = String(req.headers.authorization);
         if (req.headers.cookie) headers['Cookie'] = String(req.headers.cookie);
 
-        const backendRes = await fetch(target, {
-            method: 'POST',
-            headers,
-        });
+        const backendRes = await fetch(target, { method: 'POST', headers });
 
         const text = await backendRes.text().catch(() => '');
         const ct = backendRes.headers.get('content-type') || '';
@@ -46,8 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (ct.includes('application/json')) {
             try {
-                const json = JSON.parse(text);
-                return res.json(json);
+                return res.json(JSON.parse(text));
             } catch {
                 return res.send(text);
             }

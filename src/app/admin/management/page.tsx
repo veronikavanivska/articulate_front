@@ -61,6 +61,21 @@ export default function AdminManagementPage() {
                             </button>
                         </Link>
 
+                        <Link href="/admin/catalog">
+                            <button
+                                style={{
+                                    display: 'inline-block',
+                                    padding: '10px 14px',
+                                    background: 'linear-gradient(90deg,#6d28d9,#8b5cf6)',
+                                    color: '#fff',
+                                    borderRadius: 8,
+                                    textDecoration: 'none',
+                                    fontWeight: 700,
+                                }}
+                            >
+                                Zarządzaj słownikami (typy / dyscypliny / cykle)
+                            </button>
+                        </Link>
                     </>
                 ) : (
                     <div style={{ color: '#9ca3af' }}>Musisz mieć uprawnienia administratora, aby korzystać z panelu zarządzania.</div>
