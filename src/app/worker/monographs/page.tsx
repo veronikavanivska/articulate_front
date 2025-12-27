@@ -15,10 +15,16 @@ const CREATE_MONOGRAPH_URL = '/api/monograph/worker/createMonograph'; // POST
 const UPDATE_MONOGRAPH_URL = '/api/monograph/worker/updateMonograph'; // PATCH (body contains id)
 const DELETE_MONOGRAPH_URL = '/api/monograph/worker/deleteMonograph'; // DELETE ?id=...
 
+// ===== SLOTS =====
+const ADD_TO_SLOT_URL = '/api/slots/addToSlot';
+
 // ===== ADMIN (SŁOWNIKI) =====
 const LIST_TYPES_URL = '/api/article/admin/listTypes';
-const LIST_DISCIPLINES_URL = '/api/article/admin/listDisciplines';
 const LIST_CYCLES_URL = '/api/article/admin/listEvalCycles';
+
+// ===== PROFILES (MOJE DYSCYPLINY) =====
+// jeśli u Ciebie proxy ma inną nazwę (np. /api/profile/...), podmień tu:
+const LIST_MY_DISCIPLINES_URL = '/api/profiles/me/disciplines';
 
 type FieldErr = { field?: string; message?: string; defaultMessage?: string; code?: string };
 
@@ -103,7 +109,6 @@ type MonographListItem = {
     // backend bywa różny: czasem monograficTitle
     monograficTitle?: string | null;
 
-
     publicationYear?: number | null;
 
     type?: RefItem | null;
@@ -115,6 +120,14 @@ type MonographListItem = {
 
     meinPoints?: number | null;
     points?: number | null;
+};
+
+type WorkerDisciplineResponse = { id: number; name: string };
+type ListWorkerDisciplineResponse = {
+    discipline?: WorkerDisciplineResponse[];
+    disciplines?: WorkerDisciplineResponse[];
+    items?: WorkerDisciplineResponse[];
+    item?: WorkerDisciplineResponse[];
 };
 
 function safeJson(text: string) {
@@ -189,7 +202,6 @@ function Modal(props: { open: boolean; title: string; onClose: () => void; child
                     </button>
                 </div>
 
-                {/* KLUCZ: tu jest scroll */}
                 <div className={styles.modalBody}>{props.children}</div>
             </div>
         </div>
@@ -209,7 +221,7 @@ export default function WorkerMonographsPage() {
     // DICTS
     const [filtersLoading, setFiltersLoading] = useState(false);
     const [types, setTypes] = useState<RefItem[]>([]);
-    const [disciplines, setDisciplines] = useState<RefItem[]>([]);
+    const [disciplines, setDisciplines] = useState<RefItem[]>([]); // UWAGA: to są MOJE dyscypliny
     const [cycles, setCycles] = useState<CycleItem[]>([]);
 
     // FILTERS (RIGHT)
@@ -234,6 +246,11 @@ export default function WorkerMonographsPage() {
     const [modalError, setModalError] = useState<string | null>(null);
     const [draft, setDraft] = useState<any | null>(null);
 
+    // SLOTS
+    const [slotBusyId, setSlotBusyId] = useState<number | null>(null);
+
+    const myDisciplineIdSet = useMemo(() => new Set(disciplines.map((d) => Number(d.id))), [disciplines]);
+
     // ===== SearchSelect options =====
     const typeOptionsSS: SearchSelectOption[] = useMemo(
         () => [{ id: 0, label: '— typ publikacji —' }, ...types.map((t) => ({ id: t.id, label: t.name }))],
@@ -241,7 +258,7 @@ export default function WorkerMonographsPage() {
     );
 
     const disciplineOptionsSS: SearchSelectOption[] = useMemo(
-        () => [{ id: 0, label: '— dyscyplina —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))],
+        () => [{ id: 0, label: '— moja dyscyplina —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))],
         [disciplines]
     );
 
@@ -261,16 +278,39 @@ export default function WorkerMonographsPage() {
         setFiltersLoading(true);
         try {
             const headers = { 'Content-Type': 'application/json' };
-            const [tRes, dRes, cRes] = await Promise.all([
+
+            const [tRes, myDiscRes, cRes] = await Promise.all([
                 authFetch(LIST_TYPES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
-                authFetch(LIST_DISCIPLINES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
+                authFetch(LIST_MY_DISCIPLINES_URL, { method: 'GET' } as RequestInit),
                 authFetch(LIST_CYCLES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'DESC' }) } as RequestInit),
             ]);
 
-            const [tTxt, dTxt, cTxt] = await Promise.all([tRes.text().catch(() => ''), dRes.text().catch(() => ''), cRes.text().catch(() => '')]);
+            const [tTxt, myDiscTxt, cTxt] = await Promise.all([
+                tRes.text().catch(() => ''),
+                myDiscRes.text().catch(() => ''),
+                cRes.text().catch(() => ''),
+            ]);
 
             setTypes(tRes.ok ? ((safeJson(tTxt)?.item ?? safeJson(tTxt)?.items ?? []) as RefItem[]) : []);
-            setDisciplines(dRes.ok ? ((safeJson(dTxt)?.item ?? safeJson(dTxt)?.items ?? []) as RefItem[]) : []);
+
+            if (myDiscRes.ok) {
+                const data = (safeJson(myDiscTxt) ?? {}) as ListWorkerDisciplineResponse;
+                const arr =
+                    (data?.discipline ??
+                        data?.disciplines ??
+                        data?.items ??
+                        data?.item ??
+                        []) as WorkerDisciplineResponse[];
+
+                const mapped: RefItem[] = Array.isArray(arr)
+                    ? arr.map((d) => ({ id: Number(d.id) || 0, name: String(d.name ?? '').trim() })).filter((d) => d.id > 0 && d.name)
+                    : [];
+
+                setDisciplines(mapped);
+            } else {
+                setDisciplines([]);
+            }
+
             setCycles(cRes.ok ? ((safeJson(cTxt)?.item ?? safeJson(cTxt)?.items ?? []) as CycleItem[]) : []);
         } finally {
             setFiltersLoading(false);
@@ -331,7 +371,6 @@ export default function WorkerMonographsPage() {
             const typeId = toIntOr0(data?.typeId ?? data?.type?.id ?? 0);
             const disciplineId = toIntOr0(data?.disciplineId ?? data?.discipline?.id ?? 0);
 
-            // ważne: ujednolicenie nazwy pola wydawcy, żeby update nie wysyłał null
             const monograficPublisherTitle = String(data?.monograficPublisherTitle ?? data?.monograficTitle ?? '').trim();
 
             setDraft({
@@ -349,6 +388,49 @@ export default function WorkerMonographsPage() {
             setModalError(String(e?.message ?? e));
         } finally {
             setModalLoading(false);
+        }
+    }
+
+    async function addToSlots(it: MonographListItem) {
+        const itemId = Number(it?.id ?? 0);
+        const disciplineId = Number(it?.discipline?.id ?? 0);
+
+        if (!itemId) return;
+
+        if (!disciplineId) {
+            alert('Ta monografia nie ma ustawionej dyscypliny. Ustaw ją w szczegółach i spróbuj ponownie.');
+            return;
+        }
+
+        // jeśli dyscypliny w itemach są spoza "moich", backend i tak odrzuci – ale tu dajemy jasny komunikat:
+        if (disciplines.length > 0 && !myDisciplineIdSet.has(disciplineId)) {
+            alert('Nie masz przypisanej tej dyscypliny (sloty działają tylko w Twoich dyscyplinach).');
+            return;
+        }
+
+        setSlotBusyId(itemId);
+        try {
+            const body = {
+                disciplineId,
+                itemType: 'SLOT_ITEM_MONOGRAPH', // WAŻNE
+                itemId,
+            };
+
+            const res = await authFetch(ADD_TO_SLOT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            } as RequestInit);
+
+            if (!res.ok) {
+                const msg = await readApiError(res);
+                alert('Nie udało się dodać do slotów:\n' + msg);
+                return;
+            }
+
+            alert('Dodano do slotów.');
+        } finally {
+            setSlotBusyId(null);
         }
     }
 
@@ -526,6 +608,13 @@ export default function WorkerMonographsPage() {
                                 const more = Math.max(0, co.length - preview.length);
                                 const points = Number(it?.meinPoints ?? it?.points ?? 0) || 0;
 
+                                const disciplineId = Number(it?.discipline?.id ?? 0);
+                                const canAdd =
+                                    !!id &&
+                                    !!disciplineId &&
+                                    (disciplines.length === 0 ? true : myDisciplineIdSet.has(disciplineId)) &&
+                                    slotBusyId !== id;
+
                                 return (
                                     <div key={id || Math.random()} className={styles.cardSmall}>
                                         <div className={styles.cardTop}>
@@ -570,7 +659,22 @@ export default function WorkerMonographsPage() {
                                                 <span className={`${styles.badge} ${styles.badgeWorker}`}>MONOGRAPH</span>
                                             </div>
 
-                                            <div style={{ display: 'flex', gap: 8 }}>
+                                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                                <button
+                                                    className={styles.primaryBtn}
+                                                    onClick={() => addToSlots(it)}
+                                                    disabled={!canAdd}
+                                                    title={
+                                                        !disciplineId
+                                                            ? 'Brak dyscypliny w publikacji'
+                                                            : disciplines.length > 0 && !myDisciplineIdSet.has(disciplineId)
+                                                                ? 'Nie masz przypisanej tej dyscypliny'
+                                                                : ''
+                                                    }
+                                                >
+                                                    {slotBusyId === id ? 'Dodawanie…' : 'Dodaj do slotów'}
+                                                </button>
+
                                                 <button className={styles.infoBtn} onClick={() => id && openDetails(id)} disabled={!id}>
                                                     Szczegóły / Edytuj
                                                 </button>
@@ -598,7 +702,7 @@ export default function WorkerMonographsPage() {
                     </div>
                 </div>
 
-                {/* RIGHT: FILTERS (SearchSelect) */}
+                {/* RIGHT: FILTERS */}
                 <div className={styles.rightColumn}>
                     <div className={styles.actionsCard} style={{ position: 'sticky', top: 16, alignSelf: 'flex-start' }}>
                         <h3>Szukaj</h3>
@@ -611,16 +715,16 @@ export default function WorkerMonographsPage() {
                                 options={typeOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— typ publikacji —"
-                                onChange={(id) => setFilters((p) => ({ ...p, typeId: id }))}
+                                onChange={(id) => setFilters((p) => ({ ...p, typeId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
-                                label="Dyscyplina"
+                                label="Dyscyplina (moja)"
                                 value={filters.disciplineId}
                                 options={disciplineOptionsSS}
                                 disabled={filtersLoading}
-                                placeholder="— dyscyplina —"
-                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: id }))}
+                                placeholder="— moja dyscyplina —"
+                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
@@ -629,7 +733,7 @@ export default function WorkerMonographsPage() {
                                 options={cycleOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— cykl —"
-                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: id }))}
+                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: Number(id) || 0 }))}
                             />
 
                             <div style={{ display: 'flex', gap: 10 }}>
@@ -653,7 +757,7 @@ export default function WorkerMonographsPage() {
                 </div>
             </div>
 
-            {/* CREATE (BOTTOM) — też SearchSelect */}
+            {/* CREATE (BOTTOM) */}
             <div className={styles.bigCardFull} style={{ marginTop: 16 }}>
                 <div className={styles.cardHeader}>
                     <div className={styles.bigAvatar}>+</div>
@@ -671,16 +775,16 @@ export default function WorkerMonographsPage() {
                             options={typeOptionsSS}
                             disabled={filtersLoading}
                             placeholder="— typ publikacji —"
-                            onChange={(id) => setCreateForm((p) => ({ ...p, typeId: id }))}
+                            onChange={(id) => setCreateForm((p) => ({ ...p, typeId: Number(id) || 0 }))}
                         />
 
                         <SearchSelect
-                            label="Dyscyplina"
+                            label="Dyscyplina (moja)"
                             value={createForm.disciplineId}
                             options={disciplineOptionsSS}
                             disabled={filtersLoading}
-                            placeholder="— dyscyplina —"
-                            onChange={(id) => setCreateForm((p) => ({ ...p, disciplineId: id }))}
+                            placeholder="— moja dyscyplina —"
+                            onChange={(id) => setCreateForm((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
                         />
                     </div>
 
@@ -763,19 +867,19 @@ export default function WorkerMonographsPage() {
                                     options={typeOptionsSS}
                                     disabled={filtersLoading}
                                     placeholder="— typ publikacji —"
-                                    onChange={(id) => setDraft((p: any) => ({ ...p, typeId: id }))}
+                                    onChange={(id) => setDraft((p: any) => ({ ...p, typeId: Number(id) || 0 }))}
                                 />
                             </div>
 
-                            <div className={styles.kvKey}>Dyscyplina</div>
+                            <div className={styles.kvKey}>Dyscyplina (moja)</div>
                             <div className={styles.kvVal}>
                                 <SearchSelect
                                     label=""
                                     value={toIntOr0(draft.disciplineId)}
                                     options={disciplineOptionsSS}
                                     disabled={filtersLoading}
-                                    placeholder="— dyscyplina —"
-                                    onChange={(id) => setDraft((p: any) => ({ ...p, disciplineId: id }))}
+                                    placeholder="— moja dyscyplina —"
+                                    onChange={(id) => setDraft((p: any) => ({ ...p, disciplineId: Number(id) || 0 }))}
                                 />
                             </div>
 
@@ -813,7 +917,11 @@ export default function WorkerMonographsPage() {
                             </div>
                         </div>
 
-                        <CoauthorsPicker value={Array.isArray(draft.coauthors) ? draft.coauthors : []} onChange={(next) => setDraft((p: any) => ({ ...p, coauthors: next }))} label="Współautorzy" />
+                        <CoauthorsPicker
+                            value={Array.isArray(draft.coauthors) ? draft.coauthors : []}
+                            onChange={(next) => setDraft((p: any) => ({ ...p, coauthors: next }))}
+                            label="Współautorzy"
+                        />
 
                         <div style={{ marginTop: 12 }}>
                             <div className={styles.muted} style={{ fontWeight: 800, marginBottom: 8 }}>
