@@ -130,6 +130,13 @@ export default function WorkerManagementPage() {
                             desc="Moje rozdziały"
                             gradient="linear-gradient(90deg,#6d28d9,#8b5cf6)"
                         />
+
+                        <CardLink
+                            href="/worker/slots"
+                            title="Sloty"
+                            desc="Moje sloty"
+                            gradient="linear-gradient(90deg,#111827,#334155)"
+                        />
                     </div>
                 )}
             </div>

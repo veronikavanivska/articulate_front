@@ -261,6 +261,55 @@
         position: sticky;
         top: 28px; /* dopasuj do header paddingu */
     }
+    .modalOverlay {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        background: rgba(15, 23, 42, 0.45);
+
+        display: flex;
+        justify-content: center;
+        align-items: center;
+
+        padding: 24px 16px;
+    }
+
+    /* KARTA = kontener, ale nie scrolluje się cała, tylko body */
+    .modalCard {
+        width: min(1100px, 100%);
+        background: #fff;
+        border-radius: 18px;
+
+        /* klucz: ogranicz wysokość do viewportu */
+        max-height: calc(100vh - 48px);
+
+        /* klucz: niech body scrolluje, a nie karta */
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    /* header ma być widoczny zawsze */
+    .modalHeader {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #fff;
+
+        /* jeśli masz już padding/border w headerze, zostaw swoje */
+    }
+
+    /* NOWE: przewijana zawartość */
+    .modalBody {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+
+        /* opcjonalnie, żeby scroll nie "przebijał" na tło */
+        overscroll-behavior: contain;
+
+        /* jeśli nie masz paddingów w środku, dodaj tu */
+        padding: 0 24px 24px;
+    }
 
     /* Estetyka: zmniejszenie wewnętrznych odstępów w actionsCard, żeby nie zajmowała zbyt dużo miejsca */
     .actionsCard {

@@ -1,4 +1,3 @@
-// src/app/worker/chapters/page.tsx
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -6,6 +5,7 @@ import styles from '@/app/admin/profiles/styles.module.css';
 import { useAuth } from '@/context/AuthContext';
 import { authFetch } from '@/lib/authFetch';
 import { CoauthorsPicker, type CoauthorInput } from '@/components/CoauthorsPicker';
+import { SearchSelect, type SearchSelectOption } from '@/components/SearchSelect';
 
 // ===== WORKER (Chapter CRUD + LIST) =====
 const LIST_MY_CHAPTERS_URL = '/api/monograph/worker/listMyChapters';
@@ -44,12 +44,17 @@ function mapApiError(status: number, rawText: string): string {
         '';
 
     const statusHint =
-        status === 400 ? 'Błędne dane wejściowe.' :
-            status === 401 ? 'Brak autoryzacji (zaloguj się ponownie).' :
-                status === 403 ? 'Brak uprawnień do tej operacji.' :
-                    status === 404 ? 'Nie znaleziono zasobu (sprawdź ID).' :
-                        status >= 500 ? 'Błąd serwera (API).' :
-                            '';
+        status === 400
+            ? 'Błędne dane wejściowe.'
+            : status === 401
+                ? 'Brak autoryzacji (zaloguj się ponownie).'
+                : status === 403
+                    ? 'Brak uprawnień do tej operacji.'
+                    : status === 404
+                        ? 'Nie znaleziono zasobu (sprawdź ID).'
+                        : status >= 500
+                            ? 'Błąd serwera (API).'
+                            : '';
 
     if (errorsArr.length > 0) {
         const lines = errorsArr
@@ -103,7 +108,6 @@ type ChapterListItem = {
     discipline?: RefItem | null;
     cycle?: CycleItem | null;
 
-    // w requestach masz "coauthor" (singular), ale praktycznie to zwykle lista:
     coauthor?: Coauthor[] | null;
     coauthors?: Coauthor[] | null;
 
@@ -145,12 +149,7 @@ function cycleLabel(c?: CycleItem | null) {
 }
 
 function normalizeCoauthors(x: any): Coauthor[] {
-    const raw =
-        x?.coauthors ??
-        x?.coauthor ??
-        x?.replaceCoauthors ??
-        x?.replaceCoauthor ??
-        [];
+    const raw = x?.coauthors ?? x?.coauthor ?? x?.replaceCoauthors ?? x?.replaceCoauthor ?? [];
     const arr = Array.isArray(raw) ? (raw as any[]) : [];
 
     const mapped: Coauthor[] = arr
@@ -175,7 +174,7 @@ function coauthorLabel(c: Coauthor): string {
     return name;
 }
 
-// ===================== UI: MODAL =====================
+// ===================== UI: MODAL (scroll body) =====================
 function Modal(props: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
     if (!props.open) return null;
     return (
@@ -187,7 +186,8 @@ function Modal(props: { open: boolean; title: string; onClose: () => void; child
                         Zamknij
                     </button>
                 </div>
-                <div>{props.children}</div>
+
+                <div className={styles.modalBody}>{props.children}</div>
             </div>
         </div>
     );
@@ -222,7 +222,7 @@ export default function WorkerChaptersPage() {
         doi: '',
         isbn: '',
         publicationYear: '',
-        coauthor: [] as CoauthorInput[], // w API: "coauthor"
+        coauthor: [] as CoauthorInput[], // API: "coauthor"
     });
     const [creating, setCreating] = useState(false);
 
@@ -231,6 +231,22 @@ export default function WorkerChaptersPage() {
     const [modalLoading, setModalLoading] = useState(false);
     const [modalError, setModalError] = useState<string | null>(null);
     const [draft, setDraft] = useState<any | null>(null);
+
+    // SearchSelect options (tak jak w articles)
+    const typeOptionsSS: SearchSelectOption[] = useMemo(
+        () => [{ id: 0, label: '— typ publikacji —' }, ...types.map((t) => ({ id: t.id, label: t.name }))],
+        [types]
+    );
+
+    const disciplineOptionsSS: SearchSelectOption[] = useMemo(
+        () => [{ id: 0, label: '— dyscyplina —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))],
+        [disciplines]
+    );
+
+    const cycleOptionsSS: SearchSelectOption[] = useMemo(
+        () => [{ id: 0, label: '— cykl —' }, ...cycles.map((c) => ({ id: c.id, label: cycleLabel(c) }))],
+        [cycles]
+    );
 
     useEffect(() => {
         if (!initialized) return;
@@ -317,7 +333,6 @@ export default function WorkerChaptersPage() {
                 ...data,
                 typeId,
                 disciplineId,
-                // w requestach: "coauthor"
                 coauthor: co.map((c) => ({
                     userId: Number(c.userId) || 0,
                     fullName: String(c.fullName ?? '').trim(),
@@ -347,7 +362,6 @@ export default function WorkerChaptersPage() {
                 isbn: String(createForm.isbn ?? '').trim(),
                 publicationYear: createForm.publicationYear ? toIntOrNull(createForm.publicationYear) : null,
 
-                // CreateChapterRequest.getCoauthor()
                 coauthor: (Array.isArray(createForm.coauthor) ? createForm.coauthor : [])
                     .map((c: any) => ({ userId: Number(c?.userId ?? 0) || 0, fullName: String(c?.fullName ?? '').trim() }))
                     .filter((c) => c.fullName.length > 0),
@@ -406,11 +420,8 @@ export default function WorkerChaptersPage() {
                 doi: (draft.doi ?? '').toString(),
                 isbn: (draft.isbn ?? '').toString(),
                 publicationYear:
-                    draft.publicationYear != null && String(draft.publicationYear).trim() !== ''
-                        ? Number(draft.publicationYear)
-                        : null,
+                    draft.publicationYear != null && String(draft.publicationYear).trim() !== '' ? Number(draft.publicationYear) : null,
 
-                // UpdateChapterRequest.getCoauthor()
                 coauthor: Array.isArray(draft.coauthor)
                     ? draft.coauthor
                         .map((c: any) => ({
@@ -586,51 +597,39 @@ export default function WorkerChaptersPage() {
                     </div>
                 </div>
 
-                {/* RIGHT: FILTERS */}
+                {/* RIGHT: FILTERS (SearchSelect) */}
                 <div className={styles.rightColumn}>
                     <div className={styles.actionsCard} style={{ position: 'sticky', top: 16, alignSelf: 'flex-start' }}>
                         <h3>Szukaj</h3>
                         <p>Filtry listy rozdziałów</p>
 
                         <div style={{ display: 'grid', gap: 10 }}>
-                            <select
-                                className={styles.searchInput as any}
-                                value={String(filters.typeId)}
-                                onChange={(e) => setFilters((p) => ({ ...p, typeId: toIntOr0(e.target.value) }))}
+                            <SearchSelect
+                                label="Typ"
+                                value={filters.typeId}
+                                options={typeOptionsSS}
                                 disabled={filtersLoading}
-                            >
-                                {typeOptions.map((t) => (
-                                    <option key={t.id} value={t.id}>
-                                        {t.name}
-                                    </option>
-                                ))}
-                            </select>
+                                placeholder="— typ publikacji —"
+                                onChange={(id) => setFilters((p) => ({ ...p, typeId: id }))}
+                            />
 
-                            <select
-                                className={styles.searchInput as any}
-                                value={String(filters.disciplineId)}
-                                onChange={(e) => setFilters((p) => ({ ...p, disciplineId: toIntOr0(e.target.value) }))}
+                            <SearchSelect
+                                label="Dyscyplina"
+                                value={filters.disciplineId}
+                                options={disciplineOptionsSS}
                                 disabled={filtersLoading}
-                            >
-                                {disciplineOptions.map((d) => (
-                                    <option key={d.id} value={d.id}>
-                                        {d.name}
-                                    </option>
-                                ))}
-                            </select>
+                                placeholder="— dyscyplina —"
+                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: id }))}
+                            />
 
-                            <select
-                                className={styles.searchInput as any}
-                                value={String(filters.cycleId)}
-                                onChange={(e) => setFilters((p) => ({ ...p, cycleId: toIntOr0(e.target.value) }))}
+                            <SearchSelect
+                                label="Cykl"
+                                value={filters.cycleId}
+                                options={cycleOptionsSS}
                                 disabled={filtersLoading}
-                            >
-                                {cycleOptions.map((c) => (
-                                    <option key={c.id} value={c.id}>
-                                        {c.label}
-                                    </option>
-                                ))}
-                            </select>
+                                placeholder="— cykl —"
+                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: id }))}
+                            />
 
                             <div style={{ display: 'flex', gap: 10 }}>
                                 <button className={styles.primaryBtn} onClick={() => fetchList(0, pageMeta.size ?? 20)} disabled={loading} style={{ flex: '1 1 auto' }}>
@@ -663,75 +662,68 @@ export default function WorkerChaptersPage() {
                     </div>
                 </div>
 
-                <form onSubmit={createChapter} style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                        <select
-                            className={styles.searchInput as any}
-                            value={String(createForm.typeId)}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, typeId: toIntOr0(e.target.value) }))}
+                <form onSubmit={createChapter} style={{display: 'grid', gap: 10, marginTop: 12}}>
+                    <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10}}>
+                        <SearchSelect
+                            label="Typ"
+                            value={createForm.typeId}
+                            options={typeOptionsSS}
                             disabled={filtersLoading}
-                        >
-                            {typeOptions.map((t) => (
-                                <option key={t.id} value={t.id}>
-                                    {t.name}
-                                </option>
-                            ))}
-                        </select>
+                            placeholder="— typ publikacji —"
+                            onChange={(id) => setCreateForm((p) => ({...p, typeId: Number(id) || 0}))}
+                        />
 
-                        <select
-                            className={styles.searchInput as any}
-                            value={String(createForm.disciplineId)}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, disciplineId: toIntOr0(e.target.value) }))}
+                        <SearchSelect
+                            label="Dyscyplina"
+                            value={createForm.disciplineId}
+                            options={disciplineOptionsSS}
                             disabled={filtersLoading}
-                        >
-                            {disciplineOptions.map((d) => (
-                                <option key={d.id} value={d.id}>
-                                    {d.name}
-                                </option>
-                            ))}
-                        </select>
+                            placeholder="— dyscyplina —"
+                            onChange={(id) => setCreateForm((p) => ({...p, disciplineId: Number(id) || 0}))}
+                        />
                     </div>
+
 
                     <input
                         className={styles.searchInput}
-                        placeholder="monograficChapterTitle"
+                        placeholder="tytuł rozdziału"
                         value={createForm.monograficChapterTitle}
-                        onChange={(e) => setCreateForm((p) => ({ ...p, monograficChapterTitle: e.target.value }))}
+                        onChange={(e) => setCreateForm((p) => ({...p, monograficChapterTitle: e.target.value}))}
                     />
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                    <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10}}>
                         <input
                             className={styles.searchInput}
-                            placeholder="monograficTitle"
+                            placeholder="tytuł monografii"
                             value={createForm.monograficTitle}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, monograficTitle: e.target.value }))}
+                            onChange={(e) => setCreateForm((p) => ({...p, monograficTitle: e.target.value}))}
                         />
                         <input
                             className={styles.searchInput}
-                            placeholder="monographPublisher"
+                            placeholder="Wydawca"
                             value={createForm.monographPublisher}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, monographPublisher: e.target.value }))}
+                            onChange={(e) => setCreateForm((p) => ({...p, monographPublisher: e.target.value}))}
                         />
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
-                        <input className={styles.searchInput} placeholder="doi" value={createForm.doi} onChange={(e) => setCreateForm((p) => ({ ...p, doi: e.target.value }))} />
-                        <input className={styles.searchInput} placeholder="isbn" value={createForm.isbn} onChange={(e) => setCreateForm((p) => ({ ...p, isbn: e.target.value }))} />
+                    <div style={{display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10}}>
+                        <input className={styles.searchInput} placeholder="doi" value={createForm.doi}
+                               onChange={(e) => setCreateForm((p) => ({...p, doi: e.target.value}))}/>
+                        <input className={styles.searchInput} placeholder="isbn" value={createForm.isbn}
+                               onChange={(e) => setCreateForm((p) => ({...p, isbn: e.target.value}))}/>
                         <input
                             className={styles.searchInput}
-                            placeholder="publicationYear"
+                            placeholder="rok publikacji"
                             value={createForm.publicationYear}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, publicationYear: e.target.value }))}
+                            onChange={(e) => setCreateForm((p) => ({...p, publicationYear: e.target.value}))}
                         />
                     </div>
 
-                    <CoauthorsPicker
-                        value={createForm.coauthor}
-                        onChange={(next) => setCreateForm((p) => ({ ...p, coauthor: next }))}
-                        label="Coautorzy (coauthor; userId=0 = inna uczelnia)"
-                    />
+                    <CoauthorsPicker value={createForm.coauthor}
+                                     onChange={(next) => setCreateForm((p) => ({...p, coauthor: next}))}
+                                     label="Współautorzy"/>
 
-                    <div style={{ display: 'flex', gap: 10 }}>
+                    <div style={{display: 'flex', gap: 10}}>
                         <button className={styles.primaryBtn} type="submit" disabled={creating}>
                             {creating ? 'Zapisywanie…' : 'Dodaj'}
                         </button>
@@ -771,71 +763,67 @@ export default function WorkerChaptersPage() {
                 {modalLoading ? (
                     <div className={styles.loading}>Ładowanie…</div>
                 ) : modalError ? (
-                    <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
+                    <div className={styles.empty} style={{whiteSpace: 'pre-wrap'}}>
                         Błąd: {modalError}
                     </div>
                 ) : !draft ? (
                     <div className={styles.empty}>Brak danych.</div>
                 ) : (
                     <>
-                        <div className={styles.kvGrid} style={{ marginBottom: 12 }}>
+                        <div className={styles.kvGrid} style={{marginBottom: 12, overflow: 'visible'}}>
                             <div className={styles.kvKey}>Typ</div>
-                            <div className={styles.kvVal}>
-                                <select
-                                    className={styles.searchInput as any}
-                                    value={String(toIntOr0(draft.typeId))}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, typeId: toIntOr0(e.target.value) }))}
+                            <div className={styles.kvVal} style={{overflow: 'visible'}}>
+                                <SearchSelect
+                                    label="" // jeśli Twój SearchSelect wymaga label, zostaw; jeśli pokazuje pustą linię, zamień na "Typ"
+                                    value={toIntOr0(draft.typeId)}
+                                    options={typeOptionsSS}
                                     disabled={filtersLoading}
-                                >
-                                    {typeOptions.map((t) => (
-                                        <option key={t.id} value={t.id}>
-                                            {t.name}
-                                        </option>
-                                    ))}
-                                </select>
+                                    placeholder="— typ publikacji —"
+                                    onChange={(id) => setDraft((p: any) => ({...p, typeId: Number(id) || 0}))}
+                                />
                             </div>
 
                             <div className={styles.kvKey}>Dyscyplina</div>
-                            <div className={styles.kvVal}>
-                                <select
-                                    className={styles.searchInput as any}
-                                    value={String(toIntOr0(draft.disciplineId))}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, disciplineId: toIntOr0(e.target.value) }))}
+                            <div className={styles.kvVal} style={{overflow: 'visible'}}>
+                                <SearchSelect
+                                    label=""
+                                    value={toIntOr0(draft.disciplineId)}
+                                    options={disciplineOptionsSS}
                                     disabled={filtersLoading}
-                                >
-                                    {disciplineOptions.map((d) => (
-                                        <option key={d.id} value={d.id}>
-                                            {d.name}
-                                        </option>
-                                    ))}
-                                </select>
+                                    placeholder="— dyscyplina —"
+                                    onChange={(id) => setDraft((p: any) => ({...p, disciplineId: Number(id) || 0}))}
+                                />
                             </div>
+
 
                             <div className={styles.kvKey}>Tytuł rozdziału</div>
                             <div className={styles.kvVal}>
                                 <input
                                     className={styles.searchInput}
                                     value={String(draft.monograficChapterTitle ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, monograficChapterTitle: e.target.value }))}
+                                    onChange={(e) => setDraft((p: any) => ({
+                                        ...p,
+                                        monograficChapterTitle: e.target.value
+                                    }))}
                                 />
                             </div>
 
                             <div className={styles.kvKey}>Tytuł monografii</div>
                             <div className={styles.kvVal}>
-                                <input
-                                    className={styles.searchInput}
-                                    value={String(draft.monograficTitle ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, monograficTitle: e.target.value }))}
-                                />
+                                <input className={styles.searchInput} value={String(draft.monograficTitle ?? '')}
+                                       onChange={(e) => setDraft((p: any) => ({
+                                           ...p,
+                                           monograficTitle: e.target.value
+                                       }))}/>
                             </div>
 
                             <div className={styles.kvKey}>Wydawca</div>
                             <div className={styles.kvVal}>
-                                <input
-                                    className={styles.searchInput}
-                                    value={String(draft.monographPublisher ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, monographPublisher: e.target.value }))}
-                                />
+                                <input className={styles.searchInput} value={String(draft.monographPublisher ?? '')}
+                                       onChange={(e) => setDraft((p: any) => ({
+                                           ...p,
+                                           monographPublisher: e.target.value
+                                       }))}/>
                             </div>
 
                             <div className={styles.kvKey}>Rok</div>
@@ -843,41 +831,45 @@ export default function WorkerChaptersPage() {
                                 <input
                                     className={styles.searchInput}
                                     value={String(draft.publicationYear ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, publicationYear: e.target.value ? Number(e.target.value) : null }))}
+                                    onChange={(e) => setDraft((p: any) => ({
+                                        ...p,
+                                        publicationYear: e.target.value ? Number(e.target.value) : null
+                                    }))}
                                 />
                             </div>
 
                             <div className={styles.kvKey}>DOI</div>
                             <div className={styles.kvVal}>
-                                <input className={styles.searchInput} value={String(draft.doi ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, doi: e.target.value }))} />
+                                <input className={styles.searchInput} value={String(draft.doi ?? '')}
+                                       onChange={(e) => setDraft((p: any) => ({...p, doi: e.target.value}))}/>
                             </div>
 
                             <div className={styles.kvKey}>ISBN</div>
                             <div className={styles.kvVal}>
-                                <input className={styles.searchInput} value={String(draft.isbn ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, isbn: e.target.value }))} />
+                                <input className={styles.searchInput} value={String(draft.isbn ?? '')}
+                                       onChange={(e) => setDraft((p: any) => ({...p, isbn: e.target.value}))}/>
                             </div>
                         </div>
 
-                        <CoauthorsPicker
-                            value={Array.isArray(draft.coauthor) ? draft.coauthor : []}
-                            onChange={(next) => setDraft((p: any) => ({ ...p, coauthor: next }))}
-                            label="Coautorzy (coauthor; userId=0 = inna uczelnia)"
-                        />
+                        <CoauthorsPicker value={Array.isArray(draft.coauthor) ? draft.coauthor : []}
+                                         onChange={(next) => setDraft((p: any) => ({...p, coauthor: next}))}
+                                         label="Współautorzy"/>
 
-                        <div style={{ marginTop: 12 }}>
-                            <div className={styles.muted} style={{ fontWeight: 800, marginBottom: 8 }}>
-                                Podgląd współautorów (fullName + unitName)
+                        <div style={{marginTop: 12}}>
+                            <div className={styles.muted} style={{fontWeight: 800, marginBottom: 8}}>
+                                Podgląd współautorów
                             </div>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                                {normalizeCoauthors({ coauthor: draft.coauthor }).map((c, idx) => (
-                                    <span key={idx} className={`${styles.badge} ${styles.badgeMuted}`} title={coauthorLabel(c)}>
+                            <div style={{display: 'flex', flexWrap: 'wrap', gap: 8}}>
+                                {normalizeCoauthors({coauthor: draft.coauthor}).map((c, idx) => (
+                                    <span key={idx} className={`${styles.badge} ${styles.badgeMuted}`}
+                                          title={coauthorLabel(c)}>
                     {coauthorLabel(c)}
                   </span>
                                 ))}
                             </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                        <div style={{display: 'flex', gap: 10, marginTop: 12}}>
                             <button className={styles.primaryBtn} onClick={updateChapter}>
                                 Zapisz
                             </button>

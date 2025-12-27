@@ -77,7 +77,7 @@ export default function LoginPage() {
 
                     <div className={styles?.row ?? ''}>
                         <a className={styles?.link ?? ''} href="/register">Utwórz konto</a>
-                        <a className={styles?.link ?? ''} href="#">Zapomniałeś hasła?</a>
+
                     </div>
 
                     {error && <div style={{ color: '#dc2626', marginBottom: 8 }}>{error}</div>}

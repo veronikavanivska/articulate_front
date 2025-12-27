@@ -471,7 +471,7 @@ export default function ProfilePage() {
                         <h3>Akcje</h3>
                         <button className={styles.primaryBtn} onClick={() => router.push('/settings')}>Ustawienia
                         </button>
-                        <button className={styles.secondaryBtn} onClick={() => router.push('/worker')}>Panel
+                        <button className={styles.secondaryBtn} onClick={() => router.push('/worker/management')}>Panel
                             pracownika
                         </button>
                         <button className={styles.primaryBtn} onClick={() => router.push('/admin/management')}>Panel
