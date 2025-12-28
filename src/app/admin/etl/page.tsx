@@ -64,6 +64,8 @@ export default function ETLAdminPage() {
     const [jLoading, setJLoading] = useState(false);
     const [jError, setJError] = useState<string | null>(null);
     const [jPageMeta, setJPageMeta] = useState<PageMeta>({ page: 0, size: 20 });
+    const [journalTitleInput, setJournalTitleInput] = useState('');
+    const [journalTitleQuery, setJournalTitleQuery] = useState('');
 
     const [aFile, setAFile] = useState<File | null>(null);
     const [aLabel, setALabel] = useState('');
@@ -93,6 +95,9 @@ export default function ETLAdminPage() {
     const [pLoading, setPLoading] = useState(false);
     const [pError, setPError] = useState<string | null>(null);
     const [pPageMeta, setPPageMeta] = useState<PageMeta>({ page: 0, size: 20 });
+    const [publisherTitleInput, setPublisherTitleInput] = useState('');
+    const [publisherTitleQuery, setPublisherTitleQuery] = useState('');
+
 
     const [mFile, setMFile] = useState<File | null>(null);
     const [mLabel, setMLabel] = useState('');
@@ -128,11 +133,17 @@ export default function ETLAdminPage() {
     // ---------------- when select MEiN version -> journals ----------------
     useEffect(() => {
         if (!initialized) return;
+
         if (!selectedVersionId) {
             setJournals([]);
             return;
         }
-        fetchMeinJournals(selectedVersionId, 0, jPageMeta.size);
+
+        // reset filtra przy zmianie wersji
+        setJournalTitleInput('');
+        setJournalTitleQuery('');
+
+        fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedVersionId, initialized]);
 
@@ -148,11 +159,17 @@ export default function ETLAdminPage() {
     // ---------------- when select mono version -> publishers ----------------
     useEffect(() => {
         if (!initialized) return;
+
         if (!selectedMonoVersionId) {
             setPublishers([]);
             return;
         }
-        fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size);
+
+        // reset filtra przy zmianie wersji
+        setPublisherTitleInput('');
+        setPublisherTitleQuery('');
+
+        fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedMonoVersionId, initialized]);
 
@@ -212,10 +229,12 @@ export default function ETLAdminPage() {
 
                         if (scope === 'MEIN') {
                             fetchMeinVersions(vPageMeta.page, vPageMeta.size);
-                            if (selectedVersionId) fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size);
+                            if (selectedVersionId) fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery);
+
                         } else {
                             fetchMonoVersions(mvPageMeta.page, mvPageMeta.size);
-                            if (selectedMonoVersionId) fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size);
+                            if (selectedMonoVersionId) fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery);
+
                         }
                     }
                 } catch {
@@ -262,14 +281,45 @@ export default function ETLAdminPage() {
         }
     }
 
-    async function fetchMeinJournals(versionId: number, page = 0, size = 20) {
+    // async function fetchMeinJournals(versionId: number, page = 0, size = 20) {
+    //     setJLoading(true);
+    //     setJError(null);
+    //     try {
+    //         const res = await authFetch('/api/etl/admin/listMeinJournals', {
+    //             method: 'POST',
+    //             headers: { 'Content-Type': 'application/json' },
+    //             body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
+    //         } as RequestInit);
+    //
+    //         const text = await res.text().catch(() => '');
+    //         if (!res.ok) {
+    //             setJournals([]);
+    //             setJError(text || `HTTP ${res.status}`);
+    //             return;
+    //         }
+    //
+    //         const data = text ? JSON.parse(text) : null;
+    //         const items = data?.items ?? data?.meinJournals ?? [];
+    //         setJournals(Array.isArray(items) ? items : []);
+    //         setJPageMeta(data?.pageMeta ?? { page, size });
+    //     } catch (e: any) {
+    //         setJournals([]);
+    //         setJError(String(e?.message ?? e));
+    //     } finally {
+    //         setJLoading(false);
+    //     }
+    // }
+    async function fetchMeinJournals(versionId: number, page = 0, size = 20, title?: string) {
         setJLoading(true);
         setJError(null);
+
+        const q = (title ?? journalTitleQuery ?? '').trim();
+
         try {
             const res = await authFetch('/api/etl/admin/listMeinJournals', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
+                body: JSON.stringify({ versionId, page, size, sortDir: 'ASC', title: q }),
             } as RequestInit);
 
             const text = await res.text().catch(() => '');
@@ -429,14 +479,45 @@ export default function ETLAdminPage() {
         }
     }
 
-    async function fetchMonoPublishers(versionId: number, page = 0, size = 20) {
+    // async function fetchMonoPublishers(versionId: number, page = 0, size = 20) {
+    //     setPLoading(true);
+    //     setPError(null);
+    //     try {
+    //         const res = await authFetch('/api/etl/admin/listMeinMonoPublishers', {
+    //             method: 'POST',
+    //             headers: { 'Content-Type': 'application/json' },
+    //             body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
+    //         } as RequestInit);
+    //
+    //         const text = await res.text().catch(() => '');
+    //         if (!res.ok) {
+    //             setPublishers([]);
+    //             setPError(text || `HTTP ${res.status}`);
+    //             return;
+    //         }
+    //
+    //         const data = text ? JSON.parse(text) : null;
+    //         const items = data?.items ?? [];
+    //         setPublishers(Array.isArray(items) ? items : []);
+    //         setPPageMeta(data?.pageMeta ?? { page, size });
+    //     } catch (e: any) {
+    //         setPublishers([]);
+    //         setPError(String(e?.message ?? e));
+    //     } finally {
+    //         setPLoading(false);
+    //     }
+    // }
+    async function fetchMonoPublishers(versionId: number, page = 0, size = 20, title?: string) {
         setPLoading(true);
         setPError(null);
+
+        const q = (title ?? publisherTitleQuery ?? '').trim();
+
         try {
             const res = await authFetch('/api/etl/admin/listMeinMonoPublishers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
+                body: JSON.stringify({ versionId, page, size, sortDir: 'ASC', title: q }),
             } as RequestInit);
 
             const text = await res.text().catch(() => '');
@@ -693,7 +774,8 @@ export default function ETLAdminPage() {
 
                         <div className={styles.bigCardFull} style={{ marginTop: 18 }}>
                             <div className={styles.cardHeader}>
-                                <div className={styles.bigAvatar}>{selectedVersionId ? `V${selectedVersionId}` : '—'}</div>
+                                <div
+                                    className={styles.bigAvatar}>{selectedVersionId ? `V${selectedVersionId}` : '—'}</div>
                                 <div>
                                     <h3 className={styles.cardTitle}>
                                         {selectedVersionId ? `Lista czasopism (v${selectedVersionId})` : 'Lista czasopism'}
@@ -702,21 +784,65 @@ export default function ETLAdminPage() {
                                         {selectedVersion ? `label: ${selectedVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}
                                     </div>
                                 </div>
-                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                                <div
+                                    style={{
+                                        marginLeft: 'auto',
+                                        display: 'flex',
+                                        gap: 8,
+                                        alignItems: 'center',
+                                        flexWrap: 'wrap',
+                                        justifyContent: 'flex-end',
+                                    }}
+                                >
+                                    <input
+                                        className={styles.searchInput}
+                                        placeholder="Szukaj czasopisma po tytule…"
+                                        value={journalTitleInput}
+                                        onChange={(e) => setJournalTitleInput(e.target.value)}
+                                        style={{minWidth: 260}}
+                                    />
+
+                                    <button
+                                        className={styles.primaryBtn}
+                                        disabled={!selectedVersionId || jLoading}
+                                        onClick={() => {
+                                            if (!selectedVersionId) return;
+                                            const q = journalTitleInput.trim();
+                                            setJournalTitleQuery(q);
+                                            fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, q);
+                                        }}
+                                    >
+                                        Szukaj
+                                    </button>
+
                                     <button
                                         className={styles.ghostBtn}
                                         disabled={!selectedVersionId || jLoading}
-                                        onClick={() => selectedVersionId && fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size)}
+                                        onClick={() => {
+                                            if (!selectedVersionId) return;
+                                            setJournalTitleInput('');
+                                            setJournalTitleQuery('');
+                                            fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
+                                        }}
+                                    >
+                                        Reset
+                                    </button>
+
+                                    <button
+                                        className={styles.ghostBtn}
+                                        disabled={!selectedVersionId || jLoading}
+                                        onClick={() => selectedVersionId && fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery)}
                                     >
                                         Odśwież
                                     </button>
                                 </div>
+
                             </div>
 
                             {jLoading ? (
                                 <div className={styles.loading}>Ładowanie…</div>
                             ) : jError ? (
-                                <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
+                                <div className={styles.empty} style={{whiteSpace: 'pre-wrap'}}>
                                     Błąd: {jError}
                                 </div>
                             ) : !selectedVersionId ? (
@@ -757,14 +883,22 @@ export default function ETLAdminPage() {
                                         <button
                                             className={styles.pageBtn}
                                             disabled={jLoading || (jPageMeta.page ?? 0) <= 0}
-                                            onClick={() => selectedVersionId && fetchMeinJournals(selectedVersionId, Math.max(0, (jPageMeta.page ?? 0) - 1), jPageMeta.size)}
+                                            onClick={() =>
+                                                selectedVersionId &&
+                                                fetchMeinJournals(selectedVersionId, Math.max(0, (jPageMeta.page ?? 0) - 1), jPageMeta.size, journalTitleQuery)
+                                            }
+
                                         >
                                             ← Poprzednia
                                         </button>
                                         <button
                                             className={styles.pageBtn}
                                             disabled={jLoading}
-                                            onClick={() => selectedVersionId && fetchMeinJournals(selectedVersionId, (jPageMeta.page ?? 0) + 1, jPageMeta.size)}
+                                            onClick={() =>
+                                                selectedVersionId &&
+                                                fetchMeinJournals(selectedVersionId, (jPageMeta.page ?? 0) + 1, jPageMeta.size, journalTitleQuery)
+                                            }
+
                                         >
                                             Następna →
                                         </button>
@@ -935,7 +1069,8 @@ export default function ETLAdminPage() {
 
                         <div className={styles.bigCardFull} style={{ marginTop: 18 }}>
                             <div className={styles.cardHeader}>
-                                <div className={styles.bigAvatar}>{selectedMonoVersionId ? `M${selectedMonoVersionId}` : '—'}</div>
+                                <div
+                                    className={styles.bigAvatar}>{selectedMonoVersionId ? `M${selectedMonoVersionId}` : '—'}</div>
                                 <div>
                                     <h3 className={styles.cardTitle}>
                                         {selectedMonoVersionId ? `Publisherzy (v${selectedMonoVersionId})` : 'Publisherzy'}
@@ -944,11 +1079,52 @@ export default function ETLAdminPage() {
                                         {selectedMonoVersion ? `label: ${selectedMonoVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}
                                     </div>
                                 </div>
-                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                                <div style={{
+                                    marginLeft: 'auto',
+                                    display: 'flex',
+                                    gap: 8,
+                                    alignItems: 'center',
+                                    flexWrap: 'wrap',
+                                    justifyContent: 'flex-end'
+                                }}>
+                                    <input
+                                        className={styles.searchInput}
+                                        placeholder="Szukaj publishera po tytule…"
+                                        value={publisherTitleInput}
+                                        onChange={(e) => setPublisherTitleInput(e.target.value)}
+                                        style={{minWidth: 260}}
+                                    />
+
+                                    <button
+                                        className={styles.primaryBtn}
+                                        disabled={!selectedMonoVersionId || pLoading}
+                                        onClick={() => {
+                                            if (!selectedMonoVersionId) return;
+                                            const q = publisherTitleInput.trim();
+                                            setPublisherTitleQuery(q);
+                                            fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, q);
+                                        }}
+                                    >
+                                        Szukaj
+                                    </button>
+
                                     <button
                                         className={styles.ghostBtn}
                                         disabled={!selectedMonoVersionId || pLoading}
-                                        onClick={() => selectedMonoVersionId && fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size)}
+                                        onClick={() => {
+                                            if (!selectedMonoVersionId) return;
+                                            setPublisherTitleInput('');
+                                            setPublisherTitleQuery('');
+                                            fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
+                                        }}
+                                    >
+                                        Reset
+                                    </button>
+
+                                    <button
+                                        className={styles.ghostBtn}
+                                        disabled={!selectedMonoVersionId || pLoading}
+                                        onClick={() => selectedMonoVersionId && fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery)}
                                     >
                                         Odśwież
                                     </button>
@@ -958,7 +1134,7 @@ export default function ETLAdminPage() {
                             {pLoading ? (
                                 <div className={styles.loading}>Ładowanie…</div>
                             ) : pError ? (
-                                <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
+                                <div className={styles.empty} style={{whiteSpace: 'pre-wrap'}}>
                                     Błąd: {pError}
                                 </div>
                             ) : !selectedMonoVersionId ? (
@@ -999,14 +1175,21 @@ export default function ETLAdminPage() {
                                         <button
                                             className={styles.pageBtn}
                                             disabled={pLoading || (pPageMeta.page ?? 0) <= 0}
-                                            onClick={() => selectedMonoVersionId && fetchMonoPublishers(selectedMonoVersionId, Math.max(0, (pPageMeta.page ?? 0) - 1), pPageMeta.size)}
+                                            onClick={() =>
+                                                selectedMonoVersionId &&
+                                                fetchMonoPublishers(selectedMonoVersionId, Math.max(0, (pPageMeta.page ?? 0) - 1), pPageMeta.size, publisherTitleQuery)
+                                            }
                                         >
                                             ← Poprzednia
                                         </button>
                                         <button
                                             className={styles.pageBtn}
                                             disabled={pLoading}
-                                            onClick={() => selectedMonoVersionId && fetchMonoPublishers(selectedMonoVersionId, (pPageMeta.page ?? 0) + 1, pPageMeta.size)}
+                                            onClick={() =>
+                                                selectedMonoVersionId &&
+                                                fetchMonoPublishers(selectedMonoVersionId, (pPageMeta.page ?? 0) + 1, pPageMeta.size, publisherTitleQuery)
+                                            }
+
                                         >
                                             Następna →
                                         </button>

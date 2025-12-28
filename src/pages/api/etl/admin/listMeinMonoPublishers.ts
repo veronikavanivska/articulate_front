@@ -35,13 +35,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const page = Number(body.page ?? 0);
         const size = Number(body.size ?? 20);
         const sortDir = String(body.sortDir ?? 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+        const title = String(body.title ?? '').trim();
 
         if (!versionId) return res.status(400).json({ message: 'versionId is required' });
 
         const backendRes = await fetch(target, {
             method: 'POST',
             headers,
-            body: JSON.stringify({ versionId, page, size, sortDir }),
+            body: JSON.stringify({ versionId, page, size, sortDir,title }),
         });
 
         const text = await backendRes.text().catch(() => '');
