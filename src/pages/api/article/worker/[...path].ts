@@ -84,6 +84,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const backendUrl = `${backendBase}/article/worker/${parts.map(encodeURIComponent).join('/')}${
             qs ? `?${qs}` : ''
         }`;
+        console.log('[api/article/worker] body=', req.body);
 
         const bodyStr =
             req.body == null ? '' : typeof req.body === 'string' ? req.body : JSON.stringify(req.body);

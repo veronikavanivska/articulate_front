@@ -5,10 +5,17 @@ import styles from '@/app/admin/profiles/styles.module.css';
 import { authFetch } from '@/lib/authFetch';
 
 export type CoauthorInput = {
-    userId: number;          // 0 = inna uczelnia
-    fullName: string;        // wymagane
-    unitName?: string | null; // tylko do wyświetlania w UI
+    userId: number;
+    fullName: string;
+    unitName?: string | null;
 };
+
+type Props = {
+    value: CoauthorInput[];
+    onChange: (next: CoauthorInput[]) => void;
+    label?: string;
+};
+
 
 type ListProfileItem = {
     id: number;

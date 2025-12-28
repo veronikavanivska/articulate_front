@@ -218,6 +218,10 @@ export default function WorkerMonographsPage() {
     const [err, setErr] = useState<string | null>(null);
     const [pageMeta, setPageMeta] = useState<PageMeta>({ page: 0, size: 20 });
 
+    // TITLE SEARCH
+    const [titleInput, setTitleInput] = useState('');
+    const [titleQuery, setTitleQuery] = useState('');
+
     // DICTS
     const [filtersLoading, setFiltersLoading] = useState(false);
     const [types, setTypes] = useState<RefItem[]>([]);
@@ -317,16 +321,20 @@ export default function WorkerMonographsPage() {
         }
     }
 
-    async function fetchList(page = 0, size = 20) {
+    async function fetchList(page = 0, size = 20, titleOverride?: string) {
         setLoading(true);
         setErr(null);
+
         try {
+            const effectiveTitle = String(titleOverride ?? titleQuery ?? '').trim();
+
             const body = {
                 typeId: filters.typeId > 0 ? filters.typeId : null,
                 disciplineId: filters.disciplineId > 0 ? filters.disciplineId : null,
                 cycleId: filters.cycleId > 0 ? filters.cycleId : null,
                 page,
                 size,
+                title: effectiveTitle ? effectiveTitle : null,
             };
 
             const res = await authFetch(LIST_MY_MONOGRAPHS_URL, {
@@ -708,14 +716,28 @@ export default function WorkerMonographsPage() {
                         <h3>Szukaj</h3>
                         <p>Filtry listy monografii</p>
 
-                        <div style={{ display: 'grid', gap: 10 }}>
+                        <div style={{display: 'grid', gap: 10}}>
+                            <input
+                                className={styles.searchInput}
+                                placeholder="Szukaj po tytule…"
+                                value={titleInput}
+                                onChange={(e) => setTitleInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        const t = titleInput.trim();
+                                        setTitleQuery(t);
+                                        void fetchList(0, pageMeta.size ?? 20, t);
+                                    }
+                                }}
+                            />
+
                             <SearchSelect
                                 label="Typ"
                                 value={filters.typeId}
                                 options={typeOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— typ publikacji —"
-                                onChange={(id) => setFilters((p) => ({ ...p, typeId: Number(id) || 0 }))}
+                                onChange={(id) => setFilters((p) => ({...p, typeId: Number(id) || 0}))}
                             />
 
                             <SearchSelect
@@ -724,7 +746,7 @@ export default function WorkerMonographsPage() {
                                 options={disciplineOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— moja dyscyplina —"
-                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
+                                onChange={(id) => setFilters((p) => ({...p, disciplineId: Number(id) || 0}))}
                             />
 
                             <SearchSelect
@@ -733,21 +755,31 @@ export default function WorkerMonographsPage() {
                                 options={cycleOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— cykl —"
-                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: Number(id) || 0 }))}
+                                onChange={(id) => setFilters((p) => ({...p, cycleId: Number(id) || 0}))}
                             />
 
-                            <div style={{ display: 'flex', gap: 10 }}>
-                                <button className={styles.primaryBtn} onClick={() => fetchList(0, pageMeta.size ?? 20)} disabled={loading} style={{ flex: '1 1 auto' }}>
+                            <div style={{display: 'flex', gap: 10}}>
+                                <button className={styles.primaryBtn} onClick={() => {
+                                    const t = titleInput.trim();
+                                    setTitleQuery(t);
+                                    void fetchList(0, pageMeta.size ?? 20, t);
+                                }}
+
+
+                                        disabled={loading} style={{flex: '1 1 auto'}}>
                                     Szukaj
                                 </button>
                                 <button
                                     className={styles.ghostBtn}
                                     onClick={() => {
                                         setFilters({ typeId: 0, disciplineId: 0, cycleId: 0 });
-                                        setTimeout(() => void fetchList(0, pageMeta.size ?? 20), 0);
+                                        setTitleInput('');
+                                        setTitleQuery('');
+                                        void fetchList(0, pageMeta.size ?? 20, '');
                                     }}
+
                                     disabled={loading}
-                                    style={{ whiteSpace: 'nowrap' }}
+                                    style={{whiteSpace: 'nowrap'}}
                                 >
                                     Reset
                                 </button>
@@ -758,7 +790,7 @@ export default function WorkerMonographsPage() {
             </div>
 
             {/* CREATE (BOTTOM) */}
-            <div className={styles.bigCardFull} style={{ marginTop: 16 }}>
+            <div className={styles.bigCardFull} style={{marginTop: 16}}>
                 <div className={styles.cardHeader}>
                     <div className={styles.bigAvatar}>+</div>
                     <div>
