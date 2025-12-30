@@ -304,7 +304,7 @@ export default function SettingsPage() {
                 <Modal title="Edytuj profil" onClose={() => setModal(null)}>
                     <form onSubmit={(e) => { e.preventDefault(); submitUpdateProfile(); }}>
                         <div style={{ display: 'grid', gap: 12 }}>
-                            <label style={{ fontWeight: 700 }}>Imię / Nazwa</label>
+                            <label style={{ fontWeight: 700 }}>Imię Nazwisko</label>
                             <input className={styles.input} value={fullName} onChange={(e) => setFullname(e.target.value)} />
 
                             <label style={{ fontWeight: 700 }}>Bio</label>

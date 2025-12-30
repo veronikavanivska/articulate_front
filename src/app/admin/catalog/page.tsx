@@ -48,7 +48,7 @@ type CycleItem = {
     active: boolean;
     activeYear?: number | null;
     meinVersionId?: number | null;
-    // backend często ma monoVersionId, w UI trzymamy meinMonoVersionId
+
     meinMonoVersionId?: number | null;
 };
 
@@ -742,7 +742,7 @@ export default function AdminCatalogPage() {
                     yearTo,
                     active: Boolean(cycleForm.active),
                     meinVersionId: asNullIfZero(cycleForm.meinVersionId) ?? 0,
-                    monoVersionId: asNullIfZero(cycleForm.meinMonoVersionId) ?? 0,
+                    meinMonoVersionId: asNullIfZero(cycleForm.meinMonoVersionId) ?? 0,
                     activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
                 };
 
@@ -1173,9 +1173,7 @@ export default function AdminCatalogPage() {
                             value={asNullIfZero(cycleForm.activeYear) == null ? '' : Number(cycleForm.activeYear)}
                             onChange={(e) => setCycleForm((p) => ({ ...p, activeYear: e.target.value ? Number(e.target.value) : null }))}
                         />
-                        <span className={styles.muted} style={{ fontSize: 12 }}>
-                            Zostaw puste, jeśli nie używasz tej logiki. Unikaj wartości 0.
-                        </span>
+
                     </label>
 
                     {cycleModalIsEdit && (

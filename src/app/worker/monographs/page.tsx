@@ -714,7 +714,7 @@ export default function WorkerMonographsPage() {
                 disciplineId: draft.disciplineId ? Number(draft.disciplineId) : null,
 
                 title: String(draft.title ?? '').trim() || null,
-                doi: String(draft.doi ?? '').trim() || null,
+                doi: String(draft.doi ?? '').trim() || ' ',
                 // KLUCZOWE: nie wysyłaj pustego stringa
                 isbn: isbnTrim || null,
                 monograficPublisherTitle: String(draft.monograficPublisherTitle ?? '').trim() || null,

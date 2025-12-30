@@ -95,8 +95,7 @@ export default function DashboardPage() {
                 const res = await authFetch('/api/profile/me', { method: 'GET' });
                 if (!mounted) return;
                 if (!res.ok) {
-                    // don't auto-redirect here — show UI that allows user to go to login manually
-                    // but preserve behavior: if 401, show no profile and let "Profil" link lead to login page
+
                     setProfile(null);
                     return;
                 }
@@ -149,7 +148,7 @@ export default function DashboardPage() {
                 <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 20 }}>
                     <div>
                         <h1 style={{ margin: 0, fontSize: 36 }}>{`Witaj${displayName ? `, ${displayName}` : ''}`}</h1>
-                        <p style={{ marginTop: 8, color: '#6b7280' }}>Role: {mergedRoles.join(', ')}</p>
+
                     </div>
                     <div>
                         <a href="/settings" className={styles.link} style={{ fontWeight: 700 }}>Ustawienia</a>
