@@ -14,21 +14,103 @@ type JobItem = {
     status?: string;
     type?: string;
     error?: string | null;
+    progressPercent?: number;
+    phase?: string;
+    message?: string;
     createdAt: number;
     done: boolean;
 };
 
+type InlineMsg = { kind: 'error' | 'success' | 'info'; text: string } | null;
+
+function InlineNotice({ msg }: { msg: InlineMsg }) {
+    if (!msg) return null;
+
+    const base: React.CSSProperties = {
+        fontSize: 12,
+        fontWeight: 700,
+        padding: '8px 10px',
+        borderRadius: 10,
+        border: '1px solid var(--border)',
+        whiteSpace: 'pre-wrap',
+    };
+
+    const style: React.CSSProperties =
+        msg.kind === 'error'
+            ? { ...base, background: '#fff1f2', borderColor: '#fecdd3', color: '#9f1239' }
+            : msg.kind === 'success'
+                ? { ...base, background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46' }
+                : { ...base, background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e3a8a' };
+
+    return <div style={style}>{msg.text}</div>;
+}
+
+function FieldError({ text }: { text?: string | null }) {
+    if (!text) return null;
+    return (
+        <div style={{ fontSize: 12, fontWeight: 800, color: '#9f1239', marginTop: 6, whiteSpace: 'pre-wrap' }}>
+            {text}
+        </div>
+    );
+}
+
 function isJobDone(status?: string) {
     const s = String(status ?? '').toUpperCase();
-    return ['DONE', 'SUCCESS', 'FINISHED', 'FAILED', 'ERROR', 'CANCELLED'].includes(s);
+    return ['GOTOWE', 'POWODZENIE', 'ZAKOŃCZONE', 'NIEPOWODZENIE', 'BŁĄD', 'ANULOWANE', 'DONE', 'SUCCESS', 'FINISHED', 'FAILED', 'ERROR', 'CANCELLED'].includes(s);
 }
 
 function badgeClassForJob(status?: string) {
     const s = String(status ?? '').toUpperCase();
-    if (s === 'RUNNING' || s === 'IN_PROGRESS' || s === 'PENDING') return styles.badgeWorker;
+    if (s === 'RUNNING' || s === 'IN_PROGRESS' || s === 'PENDING' || s === 'QUEUED') return styles.badgeWorker;
     if (s === 'DONE' || s === 'SUCCESS' || s === 'FINISHED') return styles.badgeMuted;
     if (s === 'FAILED' || s === 'ERROR') return styles.badgeAdmin;
     return styles.badgeMuted;
+}
+
+function translateBackendMessage(msg: string): string {
+    const m = String(msg || '').trim();
+    if (!m) return 'Wystąpił błąd.';
+
+    // ETL / MEiN / MONO – z Twoich serwisów
+    if (m === 'Not found the mein version') return 'Nie znaleziono wersji MEiN.';
+    if (m === 'No MEiN article version with this id') return 'Nie ma wersji MEiN (artykuły) o takim ID.';
+    if (m === 'Not found the cycle') return 'Nie znaleziono cyklu ewaluacji.';
+    if (m === 'This version is already active') return 'Ta wersja jest już aktywna.';
+    if (m === 'This mein is now active') return 'Wersja MEiN została ustawiona jako aktywna.';
+    if (m === 'This version is already deactivate') return 'Ta wersja jest już zdezaktywowana.';
+    if (m === 'This mein is now deactivate') return 'Wersja MEiN została zdezaktywowana.';
+
+    if (m === 'Mein version mono not found') return 'Nie znaleziono wersji MEiN (monografie).';
+    if (m === 'Mein publisher not found') return 'Nie znaleziono wydawnictwa (publisher).';
+    if (m === 'Not found the mein mono version') return 'Nie znaleziono wersji MEiN (monografie).';
+    if (m === 'No MeinMonoVersion with this id') return 'Nie ma wersji monografii o takim ID.';
+
+    if (m === 'MEiN version deletion started or already in progress')
+        return 'Usuwanie wersji MEiN (artykuły) zostało uruchomione lub już trwa.';
+    if (m === 'MEiN mono version deletion started or already in progress')
+        return 'Usuwanie wersji MEiN (monografie) zostało uruchomione lub już trwa.';
+
+    if (m === 'Article recalculation started or already in progress')
+        return 'Przeliczanie punktów (artykuły) zostało uruchomione lub już trwa.';
+    if (m === 'Monograph cycle recalculation started or already in progress')
+        return 'Przeliczanie punktów (monografie) zostało uruchomione lub już trwa.';
+
+    // ogólne
+    if (m === 'Job not found') return 'Nie znaleziono zadania.';
+    return m;
+}
+
+function parseErrorText(text: string, status: number) {
+    const t = String(text || '').trim();
+    if (!t) return `Błąd (${status}).`;
+
+    try {
+        const json = JSON.parse(t);
+        const msg = json?.message || json?.error || json?.detail || t;
+        return translateBackendMessage(String(msg));
+    } catch {
+        return translateBackendMessage(t);
+    }
 }
 
 function Modal(props: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
@@ -49,9 +131,86 @@ function Modal(props: { open: boolean; title: string; onClose: () => void; child
     );
 }
 
+function ConfirmModal(props: {
+    open: boolean;
+    title: string;
+    message: string;
+    loading?: boolean;
+    confirmText?: string;
+    cancelText?: string;
+    onCancel: () => void;
+    onConfirm: () => void;
+}) {
+    if (!props.open) return null;
+
+    return (
+        <div className={styles.modalOverlay} onMouseDown={props.onCancel}>
+            <div className={styles.modalCard} onMouseDown={(e) => e.stopPropagation()}>
+                <div className={styles.modalHeader}>
+                    <h3 className={styles.modalTitle}>{props.title}</h3>
+                    <button className={styles.ghostBtn} onClick={props.onCancel} disabled={props.loading}>
+                        {props.cancelText ?? 'Anuluj'}
+                    </button>
+                </div>
+
+                <div style={{ padding: 12, whiteSpace: 'pre-line' }}>{props.message}</div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: 12, paddingTop: 0 }}>
+                    <button className={styles.ghostBtn} onClick={props.onCancel} disabled={props.loading}>
+                        {props.cancelText ?? 'Anuluj'}
+                    </button>
+                    <button className={styles.primaryBtn} onClick={props.onConfirm} disabled={props.loading}>
+                        {props.loading ? 'Trwa…' : props.confirmText ?? 'Potwierdź'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 export default function ETLAdminPage() {
     const { initialized } = useAuth();
     const [tab, setTab] = useState<'articles' | 'monos'>('articles');
+
+    // lokalne komunikaty (przy imporcie, bez belki u góry)
+    const [meinMsg, setMeinMsg] = useState<InlineMsg>(null);
+    const [monoMsg, setMonoMsg] = useState<InlineMsg>(null);
+    const meinMsgT = useRef<number | null>(null);
+    const monoMsgT = useRef<number | null>(null);
+
+    function pushMein(kind: NonNullable<InlineMsg>['kind'], text: string) {
+        setMeinMsg({ kind, text });
+        if (meinMsgT.current) window.clearTimeout(meinMsgT.current);
+        meinMsgT.current = window.setTimeout(() => setMeinMsg(null), 4500);
+    }
+
+    function pushMono(kind: NonNullable<InlineMsg>['kind'], text: string) {
+        setMonoMsg({ kind, text });
+        if (monoMsgT.current) window.clearTimeout(monoMsgT.current);
+        monoMsgT.current = window.setTimeout(() => setMonoMsg(null), 4500);
+    }
+
+    useEffect(() => {
+        setMeinMsg(null);
+        setMonoMsg(null);
+    }, [tab]);
+
+    // confirm modal
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [confirmTitle, setConfirmTitle] = useState('');
+    const [confirmMessage, setConfirmMessage] = useState('');
+    const confirmActionRef = useRef<(() => Promise<void>) | null>(null);
+
+    function openConfirm(title: string, message: string, action: () => Promise<void>) {
+        setConfirmTitle(title);
+        setConfirmMessage(message);
+        confirmActionRef.current = action;
+        setConfirmOpen(true);
+    }
+    function closeConfirm() {
+        setConfirmOpen(false);
+        confirmActionRef.current = null;
+    }
 
     // ===================== MEiN (ARTICLES) =====================
     const [versions, setVersions] = useState<any[]>([]);
@@ -70,6 +229,8 @@ export default function ETLAdminPage() {
     const [aFile, setAFile] = useState<File | null>(null);
     const [aLabel, setALabel] = useState('');
     const [aUploading, setAUploading] = useState(false);
+    const [aFileErr, setAFileErr] = useState<string | null>(null);
+    const [aLabelErr, setALabelErr] = useState<string | null>(null);
 
     const [versionModalOpen, setVersionModalOpen] = useState(false);
     const [versionDetails, setVersionDetails] = useState<any | null>(null);
@@ -98,11 +259,11 @@ export default function ETLAdminPage() {
     const [publisherTitleInput, setPublisherTitleInput] = useState('');
     const [publisherTitleQuery, setPublisherTitleQuery] = useState('');
 
-
     const [mFile, setMFile] = useState<File | null>(null);
     const [mLabel, setMLabel] = useState('');
     const [mUploading, setMUploading] = useState(false);
-
+    const [mFileErr, setMFileErr] = useState<string | null>(null);
+    const [mLabelErr, setMLabelErr] = useState<string | null>(null);
 
     const [monoVersionModalOpen, setMonoVersionModalOpen] = useState(false);
     const [monoVersionModalLoading, setMonoVersionModalLoading] = useState(false);
@@ -126,7 +287,7 @@ export default function ETLAdminPage() {
     // ---------------- init (MEiN default) ----------------
     useEffect(() => {
         if (!initialized) return;
-        fetchMeinVersions(0, vPageMeta.size);
+        void fetchMeinVersions(0, vPageMeta.size);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [initialized]);
 
@@ -139,11 +300,9 @@ export default function ETLAdminPage() {
             return;
         }
 
-        // reset filtra przy zmianie wersji
         setJournalTitleInput('');
         setJournalTitleQuery('');
-
-        fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
+        void fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedVersionId, initialized]);
 
@@ -152,7 +311,7 @@ export default function ETLAdminPage() {
         if (!initialized) return;
         if (tab !== 'monos') return;
         if (monoVersions.length > 0) return;
-        fetchMonoVersions(0, mvPageMeta.size);
+        void fetchMonoVersions(0, mvPageMeta.size);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [tab, initialized]);
 
@@ -165,11 +324,9 @@ export default function ETLAdminPage() {
             return;
         }
 
-        // reset filtra przy zmianie wersji
         setPublisherTitleInput('');
         setPublisherTitleQuery('');
-
-        fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
+        void fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedMonoVersionId, initialized]);
 
@@ -184,7 +341,7 @@ export default function ETLAdminPage() {
 
         if (pollRef.current) return;
         pollRef.current = window.setInterval(() => {
-            pollJobsOnce();
+            void pollJobsOnce();
         }, 2500);
 
         return () => {
@@ -217,6 +374,9 @@ export default function ETLAdminPage() {
                                     status: nextStatus,
                                     type: data?.type ?? x.type,
                                     error: data?.error ?? x.error,
+                                    progressPercent: data?.progressPercent ?? x.progressPercent,
+                                    phase: data?.phase ?? x.phase,
+                                    message: data?.message ?? x.message,
                                     done,
                                 }
                                 : x
@@ -224,21 +384,16 @@ export default function ETLAdminPage() {
                     );
 
                     if (done) {
-                        // odśwież odpowiedni obszar
-                        const scope = j.scope;
-
-                        if (scope === 'MEIN') {
-                            fetchMeinVersions(vPageMeta.page, vPageMeta.size);
-                            if (selectedVersionId) fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery);
-
+                        if (j.scope === 'MEIN') {
+                            void fetchMeinVersions(vPageMeta.page, vPageMeta.size);
+                            if (selectedVersionId) void fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery);
                         } else {
-                            fetchMonoVersions(mvPageMeta.page, mvPageMeta.size);
-                            if (selectedMonoVersionId) fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery);
-
+                            void fetchMonoVersions(mvPageMeta.page, mvPageMeta.size);
+                            if (selectedMonoVersionId) void fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery);
                         }
                     }
                 } catch {
-                    // ignoruj pojedyncze błędy pollingu
+                    // ignoruj polling
                 }
             })
         );
@@ -258,15 +413,17 @@ export default function ETLAdminPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setVersions([]);
-                setVError(text || `HTTP ${res.status}`);
+                const msg = parseErrorText(text, res.status);
+                setVError(msg);
                 return;
             }
 
             const data = text ? JSON.parse(text) : null;
             const items = data?.items ?? data?.item ?? [];
+            const meta = data?.pageMeta ?? data?.page ?? data?.page_meta ?? { page, size };
 
             setVersions(Array.isArray(items) ? items : []);
-            setVPageMeta(data?.pageMeta ?? { page, size });
+            setVPageMeta(meta);
 
             if (!selectedVersionId && Array.isArray(items) && items.length > 0) {
                 const first = items[0];
@@ -275,40 +432,12 @@ export default function ETLAdminPage() {
             }
         } catch (e: any) {
             setVersions([]);
-            setVError(String(e?.message ?? e));
+            setVError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setVLoading(false);
         }
     }
 
-    // async function fetchMeinJournals(versionId: number, page = 0, size = 20) {
-    //     setJLoading(true);
-    //     setJError(null);
-    //     try {
-    //         const res = await authFetch('/api/etl/admin/listMeinJournals', {
-    //             method: 'POST',
-    //             headers: { 'Content-Type': 'application/json' },
-    //             body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
-    //         } as RequestInit);
-    //
-    //         const text = await res.text().catch(() => '');
-    //         if (!res.ok) {
-    //             setJournals([]);
-    //             setJError(text || `HTTP ${res.status}`);
-    //             return;
-    //         }
-    //
-    //         const data = text ? JSON.parse(text) : null;
-    //         const items = data?.items ?? data?.meinJournals ?? [];
-    //         setJournals(Array.isArray(items) ? items : []);
-    //         setJPageMeta(data?.pageMeta ?? { page, size });
-    //     } catch (e: any) {
-    //         setJournals([]);
-    //         setJError(String(e?.message ?? e));
-    //     } finally {
-    //         setJLoading(false);
-    //     }
-    // }
     async function fetchMeinJournals(versionId: number, page = 0, size = 20, title?: string) {
         setJLoading(true);
         setJError(null);
@@ -325,17 +454,19 @@ export default function ETLAdminPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setJournals([]);
-                setJError(text || `HTTP ${res.status}`);
+                setJError(parseErrorText(text, res.status));
                 return;
             }
 
             const data = text ? JSON.parse(text) : null;
             const items = data?.items ?? data?.meinJournals ?? [];
+            const meta = data?.pageMeta ?? data?.page ?? data?.page_meta ?? { page, size };
+
             setJournals(Array.isArray(items) ? items : []);
-            setJPageMeta(data?.pageMeta ?? { page, size });
+            setJPageMeta(meta);
         } catch (e: any) {
             setJournals([]);
-            setJError(String(e?.message ?? e));
+            setJError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setJLoading(false);
         }
@@ -343,29 +474,44 @@ export default function ETLAdminPage() {
 
     async function importMein(e?: React.FormEvent) {
         e?.preventDefault();
-        if (!aFile) return alert('Wybierz plik');
-        if (!aLabel.trim()) return alert('Podaj label');
+
+        setAFileErr(null);
+        setALabelErr(null);
+
+        let ok = true;
+        if (!aFile) {
+            setAFileErr('Wybierz plik.');
+            ok = false;
+        }
+        if (!aLabel.trim()) {
+            setALabelErr('Podaj label.');
+            ok = false;
+        }
+        if (!ok) {
+            pushMein('error', 'Uzupełnij wymagane pola.');
+            return;
+        }
 
         setAUploading(true);
         try {
             const fd = new FormData();
-            fd.append('file', aFile);
+            fd.append('file', aFile!);
             fd.append('label', aLabel.trim());
 
             const res = await authFetch('/api/etl/admin/import', { method: 'POST', body: fd as any } as RequestInit);
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) throw new Error(parseErrorText(text, res.status));
 
             const data = text ? JSON.parse(text) : null;
 
             if (data?.alreadyImported) {
-                alert('Plik został już zaimportowany wcześniej');
-                fetchMeinVersions(0, vPageMeta.size);
+                pushMein('info', 'Plik został już zaimportowany wcześniej.');
+                await fetchMeinVersions(0, vPageMeta.size);
                 return;
             }
 
-            const newVersionId = Number(data?.version_id ?? data?.versionId ?? 0);
-            alert('Import zakończony, versionId=' + (newVersionId || 'n/a'));
+            const newVersionId = Number(data?.versionId ?? data?.version_id ?? 0);
+            pushMein('success', newVersionId > 0 ? `Import zakończony (wersja v${newVersionId}).` : 'Import zakończony.');
 
             await fetchMeinVersions(0, vPageMeta.size);
             if (newVersionId > 0) setSelectedVersionId(newVersionId);
@@ -373,45 +519,51 @@ export default function ETLAdminPage() {
             setAFile(null);
             setALabel('');
         } catch (err: any) {
-            alert('Błąd importu: ' + (err?.message ?? err));
+            pushMein('error', err?.message ?? 'Błąd importu.');
         } finally {
             setAUploading(false);
         }
     }
 
-    async function deleteMeinVersion(versionId: number) {
-        if (!confirm(`Usunąć wersję v${versionId} (asynchronicznie)?`)) return;
-        try {
-            const res = await authFetch(`/api/etl/admin/deleteMeinVersion?versionId=${versionId}`, { method: 'DELETE' });
-            const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+    async function deleteMeinVersion(versionId: number, label?: string) {
+        openConfirm(
+            'Usuń wersję MEiN',
+            `Czy na pewno chcesz usunąć wersję MEiN (artykuły)?\n${label ? `Label: ${label}\n` : ''}Wersja: v${versionId}\n\nOperacja uruchomi zadanie asynchroniczne.`,
+            async () => {
+                try {
+                    const res = await authFetch(`/api/etl/admin/deleteMeinVersion?versionId=${versionId}`, { method: 'DELETE' });
+                    const text = await res.text().catch(() => '');
+                    if (!res.ok) throw new Error(parseErrorText(text, res.status));
 
-            const data = text ? JSON.parse(text) : null;
-            const jobId = Number(data?.jobId ?? 0);
+                    const data = text ? JSON.parse(text) : null;
+                    const jobId = Number(data?.jobId ?? 0);
 
-            if (!jobId) {
-                alert('Usuwanie uruchomione, ale brak jobId w odpowiedzi');
-                return;
+                    pushMein('success', translateBackendMessage(String(data?.message ?? 'Zadanie usuwania uruchomione.')));
+
+                    if (jobId) {
+                        setJobs((prev) => [
+                            {
+                                jobId,
+                                scope: 'MEIN',
+                                versionId,
+                                status: 'RUNNING',
+                                type: 'DELETE_MEIN_VERSION',
+                                error: null,
+                                createdAt: Date.now(),
+                                done: false,
+                            },
+                            ...prev,
+                        ]);
+                    }
+
+                    await fetchMeinVersions(vPageMeta.page, vPageMeta.size);
+                    closeConfirm();
+                } catch (err: any) {
+                    pushMein('error', err?.message ?? 'Błąd usuwania.');
+                    closeConfirm();
+                }
             }
-
-            setJobs((prev) => [
-                {
-                    jobId,
-                    scope: 'MEIN',
-                    versionId,
-                    status: 'RUNNING',
-                    type: 'DELETE_MEIN_VERSION',
-                    error: null,
-                    createdAt: Date.now(),
-                    done: false,
-                },
-                ...prev,
-            ]);
-
-            fetchMeinVersions(vPageMeta.page, vPageMeta.size);
-        } catch (err: any) {
-            alert('Błąd usuwania: ' + (err?.message ?? err));
-        }
+        );
     }
 
     function openMeinVersionDetailsFromList(versionItem: any) {
@@ -433,11 +585,12 @@ export default function ETLAdminPage() {
             } as RequestInit);
 
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) throw new Error(parseErrorText(text, res.status));
+
             const data = text ? JSON.parse(text) : null;
-            setJournalModalData(data);
+            setJournalModalData(data?.item ?? data);
         } catch (e: any) {
-            setJournalModalError(String(e?.message ?? e));
+            setJournalModalError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setJournalModalLoading(false);
         }
@@ -457,14 +610,16 @@ export default function ETLAdminPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setMonoVersions([]);
-                setMvError(text || `HTTP ${res.status}`);
+                setMvError(parseErrorText(text, res.status));
                 return;
             }
 
             const data = text ? JSON.parse(text) : null;
             const items = data?.items ?? data?.item ?? [];
+            const meta = data?.pageMeta ?? data?.page ?? data?.page_meta ?? { page, size };
+
             setMonoVersions(Array.isArray(items) ? items : []);
-            setMvPageMeta(data?.pageMeta ?? { page, size });
+            setMvPageMeta(meta);
 
             if (!selectedMonoVersionId && Array.isArray(items) && items.length > 0) {
                 const first = items[0];
@@ -473,40 +628,12 @@ export default function ETLAdminPage() {
             }
         } catch (e: any) {
             setMonoVersions([]);
-            setMvError(String(e?.message ?? e));
+            setMvError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setMvLoading(false);
         }
     }
 
-    // async function fetchMonoPublishers(versionId: number, page = 0, size = 20) {
-    //     setPLoading(true);
-    //     setPError(null);
-    //     try {
-    //         const res = await authFetch('/api/etl/admin/listMeinMonoPublishers', {
-    //             method: 'POST',
-    //             headers: { 'Content-Type': 'application/json' },
-    //             body: JSON.stringify({ versionId, page, size, sortDir: 'ASC' }),
-    //         } as RequestInit);
-    //
-    //         const text = await res.text().catch(() => '');
-    //         if (!res.ok) {
-    //             setPublishers([]);
-    //             setPError(text || `HTTP ${res.status}`);
-    //             return;
-    //         }
-    //
-    //         const data = text ? JSON.parse(text) : null;
-    //         const items = data?.items ?? [];
-    //         setPublishers(Array.isArray(items) ? items : []);
-    //         setPPageMeta(data?.pageMeta ?? { page, size });
-    //     } catch (e: any) {
-    //         setPublishers([]);
-    //         setPError(String(e?.message ?? e));
-    //     } finally {
-    //         setPLoading(false);
-    //     }
-    // }
     async function fetchMonoPublishers(versionId: number, page = 0, size = 20, title?: string) {
         setPLoading(true);
         setPError(null);
@@ -523,17 +650,19 @@ export default function ETLAdminPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setPublishers([]);
-                setPError(text || `HTTP ${res.status}`);
+                setPError(parseErrorText(text, res.status));
                 return;
             }
 
             const data = text ? JSON.parse(text) : null;
             const items = data?.items ?? [];
+            const meta = data?.pageMeta ?? data?.page ?? data?.page_meta ?? { page, size };
+
             setPublishers(Array.isArray(items) ? items : []);
-            setPPageMeta(data?.pageMeta ?? { page, size });
+            setPPageMeta(meta);
         } catch (e: any) {
             setPublishers([]);
-            setPError(String(e?.message ?? e));
+            setPError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setPLoading(false);
         }
@@ -541,29 +670,44 @@ export default function ETLAdminPage() {
 
     async function importMono(e?: React.FormEvent) {
         e?.preventDefault();
-        if (!mFile) return alert('Wybierz plik PDF');
-        if (!mLabel.trim()) return alert('Podaj label');
+
+        setMFileErr(null);
+        setMLabelErr(null);
+
+        let ok = true;
+        if (!mFile) {
+            setMFileErr('Wybierz plik PDF.');
+            ok = false;
+        }
+        if (!mLabel.trim()) {
+            setMLabelErr('Podaj label.');
+            ok = false;
+        }
+        if (!ok) {
+            pushMono('error', 'Uzupełnij wymagane pola.');
+            return;
+        }
 
         setMUploading(true);
         try {
             const fd = new FormData();
-            fd.append('file', mFile);
+            fd.append('file', mFile!);
             fd.append('label', mLabel.trim());
 
             const res = await authFetch('/api/etl/admin/importPDF', { method: 'POST', body: fd as any } as RequestInit);
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) throw new Error(parseErrorText(text, res.status));
 
             const data = text ? JSON.parse(text) : null;
 
             if (data?.alreadyImported) {
-                alert('Plik został już zaimportowany wcześniej');
-                fetchMonoVersions(0, mvPageMeta.size);
+                pushMono('info', 'Plik został już zaimportowany wcześniej.');
+                await fetchMonoVersions(0, mvPageMeta.size);
                 return;
             }
 
-            const newVersionId = Number(data?.version_id ?? data?.versionId ?? 0);
-            alert('Import monografii zakończony, versionId=' + (newVersionId || 'n/a'));
+            const newVersionId = Number(data?.versionId ?? data?.version_id ?? 0);
+            pushMono('success', newVersionId > 0 ? `Import monografii zakończony (wersja v${newVersionId}).` : 'Import monografii zakończony.');
 
             await fetchMonoVersions(0, mvPageMeta.size);
             if (newVersionId > 0) setSelectedMonoVersionId(newVersionId);
@@ -571,47 +715,52 @@ export default function ETLAdminPage() {
             setMFile(null);
             setMLabel('');
         } catch (err: any) {
-            alert('Błąd importu monografii: ' + (err?.message ?? err));
+            pushMono('error', err?.message ?? 'Błąd importu monografii.');
         } finally {
             setMUploading(false);
         }
     }
 
-    async function deleteMonoVersion(versionId: number) {
-        if (!confirm(`Usunąć wersję monografii v${versionId} (asynchronicznie)?`)) return;
-        try {
-            const res = await authFetch(`/api/etl/admin/deleteMeinMonoVersion?versionId=${versionId}`, { method: 'DELETE' });
-            const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+    async function deleteMonoVersion(versionId: number, label?: string) {
+        openConfirm(
+            'Usuń wersję monografii',
+            `Czy na pewno chcesz usunąć wersję MEiN (monografie)?\n${label ? `Label: ${label}\n` : ''}Wersja: v${versionId}\n\nOperacja uruchomi zadanie asynchroniczne.`,
+            async () => {
+                try {
+                    const res = await authFetch(`/api/etl/admin/deleteMeinMonoVersion?versionId=${versionId}`, { method: 'DELETE' });
+                    const text = await res.text().catch(() => '');
+                    if (!res.ok) throw new Error(parseErrorText(text, res.status));
 
-            const data = text ? JSON.parse(text) : null;
-            const jobId = Number(data?.jobId ?? 0);
+                    const data = text ? JSON.parse(text) : null;
+                    const jobId = Number(data?.jobId ?? 0);
 
-            if (!jobId) {
-                alert('Usuwanie uruchomione, ale brak jobId w odpowiedzi');
-                return;
+                    pushMono('success', translateBackendMessage(String(data?.message ?? 'Zadanie usuwania uruchomione.')));
+
+                    if (jobId) {
+                        setJobs((prev) => [
+                            {
+                                jobId,
+                                scope: 'MONO',
+                                versionId,
+                                status: 'RUNNING',
+                                type: 'DELETE_MEIN_MONO_VERSION',
+                                error: null,
+                                createdAt: Date.now(),
+                                done: false,
+                            },
+                            ...prev,
+                        ]);
+                    }
+
+                    await fetchMonoVersions(mvPageMeta.page, mvPageMeta.size);
+                    closeConfirm();
+                } catch (err: any) {
+                    pushMono('error', err?.message ?? 'Błąd usuwania monografii.');
+                    closeConfirm();
+                }
             }
-
-            setJobs((prev) => [
-                {
-                    jobId,
-                    scope: 'MONO',
-                    versionId,
-                    status: 'RUNNING',
-                    type: 'DELETE_MEIN_MONO_VERSION',
-                    error: null,
-                    createdAt: Date.now(),
-                    done: false,
-                },
-                ...prev,
-            ]);
-
-            fetchMonoVersions(mvPageMeta.page, mvPageMeta.size);
-        } catch (err: any) {
-            alert('Błąd usuwania monografii: ' + (err?.message ?? err));
-        }
+        );
     }
-
 
     async function openMonoVersionDetails(versionId: number) {
         setMonoVersionModalOpen(true);
@@ -622,11 +771,12 @@ export default function ETLAdminPage() {
         try {
             const res = await authFetch(`/api/etl/admin/getMeinMonoVersion?versionId=${versionId}`, { method: 'GET' });
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) throw new Error(parseErrorText(text, res.status));
+
             const data = text ? JSON.parse(text) : null;
-            setMonoVersionModalData(data);
+            setMonoVersionModalData(data?.version ?? data);
         } catch (e: any) {
-            setMonoVersionModalError(String(e?.message ?? e));
+            setMonoVersionModalError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setMonoVersionModalLoading(false);
         }
@@ -641,11 +791,12 @@ export default function ETLAdminPage() {
         try {
             const res = await authFetch(`/api/etl/admin/getMeinMonoPublisher?publisherId=${publisherId}`, { method: 'GET' });
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) throw new Error(parseErrorText(text, res.status));
+
             const data = text ? JSON.parse(text) : null;
-            setPublisherModalData(data);
+            setPublisherModalData(data?.publisher ?? data);
         } catch (e: any) {
-            setPublisherModalError(String(e?.message ?? e));
+            setPublisherModalError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setPublisherModalLoading(false);
         }
@@ -653,7 +804,6 @@ export default function ETLAdminPage() {
 
     if (!initialized) return <div className={styles.page}>Ładowanie…</div>;
 
-    // ===================== UI helpers =====================
     const jobsForTab = jobs.filter((j) => (tab === 'articles' ? j.scope === 'MEIN' : j.scope === 'MONO'));
 
     return (
@@ -661,10 +811,7 @@ export default function ETLAdminPage() {
             <header className={styles.headerRow}>
                 <h1 className={styles.title}>Panel admin — ETL</h1>
                 <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                        className={tab === 'articles' ? styles.primaryBtn : styles.ghostBtn}
-                        onClick={() => setTab('articles')}
-                    >
+                    <button className={tab === 'articles' ? styles.primaryBtn : styles.ghostBtn} onClick={() => setTab('articles')}>
                         Zarządzaj artykułami
                     </button>
                     <button className={tab === 'monos' ? styles.primaryBtn : styles.ghostBtn} onClick={() => setTab('monos')}>
@@ -677,17 +824,9 @@ export default function ETLAdminPage() {
             {tab === 'articles' && (
                 <div className={styles.contentRow}>
                     <div className={styles.leftColumn}>
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                gap: 12,
-                                marginBottom: 12,
-                            }}
-                        >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                             <h2 style={{ margin: 0 }}>Wersje MEiN</h2>
-                            <button className={styles.ghostBtn} onClick={() => fetchMeinVersions(vPageMeta.page, vPageMeta.size)} disabled={vLoading}>
+                            <button className={styles.ghostBtn} onClick={() => void fetchMeinVersions(vPageMeta.page, vPageMeta.size)} disabled={vLoading}>
                                 Odśwież
                             </button>
                         </div>
@@ -725,10 +864,6 @@ export default function ETLAdminPage() {
                                             </div>
 
                                             <div className={styles.cardBottom}>
-                                                <div className={styles.badgeRow}>
-                                                    <span className={`${styles.badge} ${styles.badgeWorker}`}>MEiN</span>
-                                                </div>
-
                                                 <div style={{ display: 'flex', gap: 8 }}>
                                                     <button
                                                         className={styles.infoBtn}
@@ -743,7 +878,7 @@ export default function ETLAdminPage() {
                                                         className={styles.dangerBtn}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            deleteMeinVersion(id);
+                                                            void deleteMeinVersion(id, label);
                                                         }}
                                                     >
                                                         Usuń
@@ -760,11 +895,11 @@ export default function ETLAdminPage() {
                             <button
                                 className={styles.pageBtn}
                                 disabled={vLoading || (vPageMeta.page ?? 0) <= 0}
-                                onClick={() => fetchMeinVersions(Math.max(0, (vPageMeta.page ?? 0) - 1), vPageMeta.size)}
+                                onClick={() => void fetchMeinVersions(Math.max(0, (vPageMeta.page ?? 0) - 1), vPageMeta.size)}
                             >
                                 ← Poprzednia
                             </button>
-                            <button className={styles.pageBtn} disabled={vLoading} onClick={() => fetchMeinVersions((vPageMeta.page ?? 0) + 1, vPageMeta.size)}>
+                            <button className={styles.pageBtn} disabled={vLoading} onClick={() => void fetchMeinVersions((vPageMeta.page ?? 0) + 1, vPageMeta.size)}>
                                 Następna →
                             </button>
                             <div className={styles.pageInfo}>
@@ -774,32 +909,19 @@ export default function ETLAdminPage() {
 
                         <div className={styles.bigCardFull} style={{ marginTop: 18 }}>
                             <div className={styles.cardHeader}>
-                                <div
-                                    className={styles.bigAvatar}>{selectedVersionId ? `V${selectedVersionId}` : '—'}</div>
+                                <div className={styles.bigAvatar}>{selectedVersionId ? `V${selectedVersionId}` : '—'}</div>
                                 <div>
-                                    <h3 className={styles.cardTitle}>
-                                        {selectedVersionId ? `Lista czasopism (v${selectedVersionId})` : 'Lista czasopism'}
-                                    </h3>
-                                    <div className={styles.muted}>
-                                        {selectedVersion ? `label: ${selectedVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}
-                                    </div>
+                                    <h3 className={styles.cardTitle}>{selectedVersionId ? `Lista czasopism (v${selectedVersionId})` : 'Lista czasopism'}</h3>
+                                    <div className={styles.muted}>{selectedVersion ? `label: ${selectedVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}</div>
                                 </div>
-                                <div
-                                    style={{
-                                        marginLeft: 'auto',
-                                        display: 'flex',
-                                        gap: 8,
-                                        alignItems: 'center',
-                                        flexWrap: 'wrap',
-                                        justifyContent: 'flex-end',
-                                    }}
-                                >
+
+                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                     <input
                                         className={styles.searchInput}
                                         placeholder="Szukaj czasopisma po tytule…"
                                         value={journalTitleInput}
                                         onChange={(e) => setJournalTitleInput(e.target.value)}
-                                        style={{minWidth: 260}}
+                                        style={{ minWidth: 260 }}
                                     />
 
                                     <button
@@ -809,7 +931,7 @@ export default function ETLAdminPage() {
                                             if (!selectedVersionId) return;
                                             const q = journalTitleInput.trim();
                                             setJournalTitleQuery(q);
-                                            fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, q);
+                                            void fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, q);
                                         }}
                                     >
                                         Szukaj
@@ -822,7 +944,7 @@ export default function ETLAdminPage() {
                                             if (!selectedVersionId) return;
                                             setJournalTitleInput('');
                                             setJournalTitleQuery('');
-                                            fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
+                                            void fetchMeinJournals(selectedVersionId, 0, jPageMeta.size, '');
                                         }}
                                     >
                                         Reset
@@ -831,18 +953,17 @@ export default function ETLAdminPage() {
                                     <button
                                         className={styles.ghostBtn}
                                         disabled={!selectedVersionId || jLoading}
-                                        onClick={() => selectedVersionId && fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery)}
+                                        onClick={() => selectedVersionId && void fetchMeinJournals(selectedVersionId, jPageMeta.page, jPageMeta.size, journalTitleQuery)}
                                     >
                                         Odśwież
                                     </button>
                                 </div>
-
                             </div>
 
                             {jLoading ? (
                                 <div className={styles.loading}>Ładowanie…</div>
                             ) : jError ? (
-                                <div className={styles.empty} style={{whiteSpace: 'pre-wrap'}}>
+                                <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
                                     Błąd: {jError}
                                 </div>
                             ) : !selectedVersionId ? (
@@ -854,23 +975,20 @@ export default function ETLAdminPage() {
                                     <div className={styles.disciplines}>
                                         {journals.map((j: any) => {
                                             const jid = Number(j?.id ?? j?.journalId ?? 0);
-
-                                            const issnLine = [j.issn, j.issn2].filter((x) => x && String(x).trim()).join(' • ');
-                                            const eissnLine = [j.eissn, j.eissn2].filter((x) => x && String(x).trim()).join(' • ');
-                                            const metaParts: string[] = [];
-                                            if (issnLine) metaParts.push(`ISSN: ${issnLine}`);
-                                            if (eissnLine) metaParts.push(`EISSN: ${eissnLine}`);
-                                            if (j.points != null && String(j.points).trim() !== '') metaParts.push(`${j.points} pkt`);
+                                            const title = j.title1 ?? j.title ?? j.uid ?? '—';
+                                            const issn = j.issn || j.issn2 ? `ISSN: ${[j.issn, j.issn2].filter(Boolean).join(' • ')}` : '';
+                                            const eissn = j.eissn || j.eissn2 ? `EISSN: ${[j.eissn, j.eissn2].filter(Boolean).join(' • ')}` : '';
+                                            const points = j.points != null ? `${j.points} pkt` : '';
+                                            const meta = [issn, eissn, points].filter(Boolean).join('  |  ');
 
                                             return (
                                                 <div key={j.uid ?? jid} className={styles.disciplineItem}>
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                                        <div style={{ fontWeight: 900 }}>{j.title1 ?? j.title ?? j.uid ?? '—'}</div>
-                                                        <div className={styles.muted}>{metaParts.length ? metaParts.join('  |  ') : '—'}</div>
+                                                        <div style={{ fontWeight: 900 }}>{title}</div>
+                                                        <div className={styles.muted}>{meta || '—'}</div>
                                                     </div>
-
                                                     <div style={{ display: 'flex', gap: 8 }}>
-                                                        <button className={styles.infoBtn} onClick={() => openJournalDetails(selectedVersionId, jid)}>
+                                                        <button className={styles.infoBtn} onClick={() => selectedVersionId && void openJournalDetails(selectedVersionId, jid)}>
                                                             Szczegóły
                                                         </button>
                                                     </div>
@@ -885,20 +1003,15 @@ export default function ETLAdminPage() {
                                             disabled={jLoading || (jPageMeta.page ?? 0) <= 0}
                                             onClick={() =>
                                                 selectedVersionId &&
-                                                fetchMeinJournals(selectedVersionId, Math.max(0, (jPageMeta.page ?? 0) - 1), jPageMeta.size, journalTitleQuery)
+                                                void fetchMeinJournals(selectedVersionId, Math.max(0, (jPageMeta.page ?? 0) - 1), jPageMeta.size, journalTitleQuery)
                                             }
-
                                         >
                                             ← Poprzednia
                                         </button>
                                         <button
                                             className={styles.pageBtn}
                                             disabled={jLoading}
-                                            onClick={() =>
-                                                selectedVersionId &&
-                                                fetchMeinJournals(selectedVersionId, (jPageMeta.page ?? 0) + 1, jPageMeta.size, journalTitleQuery)
-                                            }
-
+                                            onClick={() => selectedVersionId && void fetchMeinJournals(selectedVersionId, (jPageMeta.page ?? 0) + 1, jPageMeta.size, journalTitleQuery)}
                                         >
                                             Następna →
                                         </button>
@@ -917,15 +1030,54 @@ export default function ETLAdminPage() {
                             <p>Excel</p>
 
                             <form onSubmit={importMein} style={{ display: 'grid', gap: 10 }}>
-                                <input type="file" accept=".xml,.zip,.csv" onChange={(e) => setAFile(e.target.files?.[0] ?? null)} />
-                                <input className={styles.searchInput} placeholder="label" value={aLabel} onChange={(e) => setALabel(e.target.value)} />
-                                <div style={{ display: 'flex', gap: 10 }}>
+                                <div>
+                                    <input
+                                        type="file"
+                                        accept=".xlsx,.xls,.xml,.zip,.csv"
+                                        onChange={(e) => {
+                                            setAFile(e.target.files?.[0] ?? null);
+                                            setAFileErr(null);
+                                        }}
+                                    />
+                                    <FieldError text={aFileErr} />
+                                </div>
+
+                                <div>
+                                    <input
+                                        className={styles.searchInput}
+                                        placeholder="label"
+                                        value={aLabel}
+                                        onChange={(e) => {
+                                            setALabel(e.target.value);
+                                            setALabelErr(null);
+                                        }}
+                                    />
+                                    <FieldError text={aLabelErr} />
+                                </div>
+
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                                     <button className={styles.primaryBtn} type="submit" disabled={aUploading}>
                                         {aUploading ? 'Wysyłanie…' : 'Importuj'}
                                     </button>
-                                    <button type="button" className={styles.ghostBtn} onClick={() => { setAFile(null); setALabel(''); }}>
+                                    <button
+                                        type="button"
+                                        className={styles.ghostBtn}
+                                        onClick={() => {
+                                            setAFile(null);
+                                            setALabel('');
+                                            setAFileErr(null);
+                                            setALabelErr(null);
+                                            setMeinMsg(null);
+                                        }}
+                                        disabled={aUploading}
+                                    >
                                         Wyczyść
                                     </button>
+
+                                    {/* komunikat obok przycisków */}
+                                    <div style={{ minWidth: 240, flex: 1 }}>
+                                        <InlineNotice msg={meinMsg} />
+                                    </div>
                                 </div>
                             </form>
                         </div>
@@ -954,9 +1106,15 @@ export default function ETLAdminPage() {
                                         >
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                 <div style={{ fontWeight: 900 }}>
-                                                    jobId: {j.jobId} {j.versionId ? `• v${j.versionId}` : ''}
+                                                    Zadanie #{j.jobId} {j.versionId ? `• v${j.versionId}` : ''}
                                                 </div>
-                                                <div className={styles.muted}>{j.type ?? '—'} {j.error ? `• error: ${j.error}` : ''}</div>
+                                                <div className={styles.muted}>
+                                                    {j.type ?? '—'}
+                                                    {typeof j.progressPercent === 'number' ? ` • ${j.progressPercent}%` : ''}
+                                                    {j.phase ? ` • ${j.phase}` : ''}
+                                                    {j.error ? ` • błąd: ${translateBackendMessage(j.error)}` : ''}
+                                                    {!j.error && j.message ? ` • ${translateBackendMessage(j.message)}` : ''}
+                                                </div>
                                             </div>
                                             <span className={`${styles.badge} ${badgeClassForJob(j.status)}`}>{j.status ?? '—'}</span>
                                         </div>
@@ -972,17 +1130,9 @@ export default function ETLAdminPage() {
             {tab === 'monos' && (
                 <div className={styles.contentRow}>
                     <div className={styles.leftColumn}>
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                gap: 12,
-                                marginBottom: 12,
-                            }}
-                        >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                             <h2 style={{ margin: 0 }}>Wersje monografii</h2>
-                            <button className={styles.ghostBtn} onClick={() => fetchMonoVersions(mvPageMeta.page, mvPageMeta.size)} disabled={mvLoading}>
+                            <button className={styles.ghostBtn} onClick={() => void fetchMonoVersions(mvPageMeta.page, mvPageMeta.size)} disabled={mvLoading}>
                                 Odśwież
                             </button>
                         </div>
@@ -1029,7 +1179,7 @@ export default function ETLAdminPage() {
                                                         className={styles.infoBtn}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            openMonoVersionDetails(id);
+                                                            void openMonoVersionDetails(id);
                                                         }}
                                                     >
                                                         Szczegóły
@@ -1038,7 +1188,7 @@ export default function ETLAdminPage() {
                                                         className={styles.dangerBtn}
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            deleteMonoVersion(id);
+                                                            void deleteMonoVersion(id, label);
                                                         }}
                                                     >
                                                         Usuń
@@ -1055,11 +1205,11 @@ export default function ETLAdminPage() {
                             <button
                                 className={styles.pageBtn}
                                 disabled={mvLoading || (mvPageMeta.page ?? 0) <= 0}
-                                onClick={() => fetchMonoVersions(Math.max(0, (mvPageMeta.page ?? 0) - 1), mvPageMeta.size)}
+                                onClick={() => void fetchMonoVersions(Math.max(0, (mvPageMeta.page ?? 0) - 1), mvPageMeta.size)}
                             >
                                 ← Poprzednia
                             </button>
-                            <button className={styles.pageBtn} disabled={mvLoading} onClick={() => fetchMonoVersions((mvPageMeta.page ?? 0) + 1, mvPageMeta.size)}>
+                            <button className={styles.pageBtn} disabled={mvLoading} onClick={() => void fetchMonoVersions((mvPageMeta.page ?? 0) + 1, mvPageMeta.size)}>
                                 Następna →
                             </button>
                             <div className={styles.pageInfo}>
@@ -1069,30 +1219,19 @@ export default function ETLAdminPage() {
 
                         <div className={styles.bigCardFull} style={{ marginTop: 18 }}>
                             <div className={styles.cardHeader}>
-                                <div
-                                    className={styles.bigAvatar}>{selectedMonoVersionId ? `M${selectedMonoVersionId}` : '—'}</div>
+                                <div className={styles.bigAvatar}>{selectedMonoVersionId ? `M${selectedMonoVersionId}` : '—'}</div>
                                 <div>
-                                    <h3 className={styles.cardTitle}>
-                                        {selectedMonoVersionId ? `Publisherzy (v${selectedMonoVersionId})` : 'Publisherzy'}
-                                    </h3>
-                                    <div className={styles.muted}>
-                                        {selectedMonoVersion ? `label: ${selectedMonoVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}
-                                    </div>
+                                    <h3 className={styles.cardTitle}>{selectedMonoVersionId ? `Publisherzy (v${selectedMonoVersionId})` : 'Publisherzy'}</h3>
+                                    <div className={styles.muted}>{selectedMonoVersion ? `label: ${selectedMonoVersion.label ?? '—'}` : 'Wybierz wersję po lewej.'}</div>
                                 </div>
-                                <div style={{
-                                    marginLeft: 'auto',
-                                    display: 'flex',
-                                    gap: 8,
-                                    alignItems: 'center',
-                                    flexWrap: 'wrap',
-                                    justifyContent: 'flex-end'
-                                }}>
+
+                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                     <input
                                         className={styles.searchInput}
                                         placeholder="Szukaj publishera po tytule…"
                                         value={publisherTitleInput}
                                         onChange={(e) => setPublisherTitleInput(e.target.value)}
-                                        style={{minWidth: 260}}
+                                        style={{ minWidth: 260 }}
                                     />
 
                                     <button
@@ -1102,7 +1241,7 @@ export default function ETLAdminPage() {
                                             if (!selectedMonoVersionId) return;
                                             const q = publisherTitleInput.trim();
                                             setPublisherTitleQuery(q);
-                                            fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, q);
+                                            void fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, q);
                                         }}
                                     >
                                         Szukaj
@@ -1115,7 +1254,7 @@ export default function ETLAdminPage() {
                                             if (!selectedMonoVersionId) return;
                                             setPublisherTitleInput('');
                                             setPublisherTitleQuery('');
-                                            fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
+                                            void fetchMonoPublishers(selectedMonoVersionId, 0, pPageMeta.size, '');
                                         }}
                                     >
                                         Reset
@@ -1124,7 +1263,7 @@ export default function ETLAdminPage() {
                                     <button
                                         className={styles.ghostBtn}
                                         disabled={!selectedMonoVersionId || pLoading}
-                                        onClick={() => selectedMonoVersionId && fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery)}
+                                        onClick={() => selectedMonoVersionId && void fetchMonoPublishers(selectedMonoVersionId, pPageMeta.page, pPageMeta.size, publisherTitleQuery)}
                                     >
                                         Odśwież
                                     </button>
@@ -1134,7 +1273,7 @@ export default function ETLAdminPage() {
                             {pLoading ? (
                                 <div className={styles.loading}>Ładowanie…</div>
                             ) : pError ? (
-                                <div className={styles.empty} style={{whiteSpace: 'pre-wrap'}}>
+                                <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
                                     Błąd: {pError}
                                 </div>
                             ) : !selectedMonoVersionId ? (
@@ -1146,23 +1285,21 @@ export default function ETLAdminPage() {
                                     <div className={styles.disciplines}>
                                         {publishers.map((p: any) => {
                                             const pid = Number(p?.publisherId ?? p?.id ?? 0);
-                                            const title = p?.name ?? p?.title ?? p?.publisherName ?? `Publisher #${pid || '—'}`;
-
-                                            const metaParts: string[] = [];
-                                            if (pid) metaParts.push(`id: ${pid}`);
-                                            if (p?.points != null) metaParts.push(`pkt: ${p.points}`);
-                                            if (p?.monographs != null) metaParts.push(`mono: ${p.monographs}`);
-                                            if (p?.items != null) metaParts.push(`items: ${p.items}`);
+                                            const title = p?.title ?? p?.name ?? p?.publisherName ?? '—';
+                                            const parts: string[] = [];
+                                            if (p?.level != null && String(p.level).trim() !== '') parts.push(`poziom: ${p.level}`);
+                                            if (p?.points != null && String(p.points).trim() !== '') parts.push(`pkt: ${p.points}`);
+                                            const meta = parts.join('  |  ');
 
                                             return (
                                                 <div key={pid || title} className={styles.disciplineItem}>
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                         <div style={{ fontWeight: 900 }}>{title}</div>
-                                                        <div className={styles.muted}>{metaParts.length ? metaParts.join('  |  ') : '—'}</div>
+                                                        <div className={styles.muted}>{meta || '—'}</div>
                                                     </div>
 
                                                     <div style={{ display: 'flex', gap: 8 }}>
-                                                        <button className={styles.infoBtn} onClick={() => pid && openPublisherDetails(pid)} disabled={!pid}>
+                                                        <button className={styles.infoBtn} onClick={() => pid && void openPublisherDetails(pid)} disabled={!pid}>
                                                             Szczegóły
                                                         </button>
                                                     </div>
@@ -1177,7 +1314,7 @@ export default function ETLAdminPage() {
                                             disabled={pLoading || (pPageMeta.page ?? 0) <= 0}
                                             onClick={() =>
                                                 selectedMonoVersionId &&
-                                                fetchMonoPublishers(selectedMonoVersionId, Math.max(0, (pPageMeta.page ?? 0) - 1), pPageMeta.size, publisherTitleQuery)
+                                                void fetchMonoPublishers(selectedMonoVersionId, Math.max(0, (pPageMeta.page ?? 0) - 1), pPageMeta.size, publisherTitleQuery)
                                             }
                                         >
                                             ← Poprzednia
@@ -1186,10 +1323,8 @@ export default function ETLAdminPage() {
                                             className={styles.pageBtn}
                                             disabled={pLoading}
                                             onClick={() =>
-                                                selectedMonoVersionId &&
-                                                fetchMonoPublishers(selectedMonoVersionId, (pPageMeta.page ?? 0) + 1, pPageMeta.size, publisherTitleQuery)
+                                                selectedMonoVersionId && void fetchMonoPublishers(selectedMonoVersionId, (pPageMeta.page ?? 0) + 1, pPageMeta.size, publisherTitleQuery)
                                             }
-
                                         >
                                             Następna →
                                         </button>
@@ -1208,20 +1343,57 @@ export default function ETLAdminPage() {
                             <p>PDF</p>
 
                             <form onSubmit={importMono} style={{ display: 'grid', gap: 10 }}>
-                                <input type="file" accept=".pdf,.zip" onChange={(e) => setMFile(e.target.files?.[0] ?? null)} />
-                                <input className={styles.searchInput} placeholder="label" value={mLabel} onChange={(e) => setMLabel(e.target.value)} />
-                                <div style={{ display: 'flex', gap: 10 }}>
+                                <div>
+                                    <input
+                                        type="file"
+                                        accept=".pdf,.zip"
+                                        onChange={(e) => {
+                                            setMFile(e.target.files?.[0] ?? null);
+                                            setMFileErr(null);
+                                        }}
+                                    />
+                                    <FieldError text={mFileErr} />
+                                </div>
+
+                                <div>
+                                    <input
+                                        className={styles.searchInput}
+                                        placeholder="label"
+                                        value={mLabel}
+                                        onChange={(e) => {
+                                            setMLabel(e.target.value);
+                                            setMLabelErr(null);
+                                        }}
+                                    />
+                                    <FieldError text={mLabelErr} />
+                                </div>
+
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                                     <button className={styles.primaryBtn} type="submit" disabled={mUploading}>
                                         {mUploading ? 'Wysyłanie…' : 'Importuj'}
                                     </button>
-                                    <button type="button" className={styles.ghostBtn} onClick={() => { setMFile(null); setMLabel(''); }}>
+                                    <button
+                                        type="button"
+                                        className={styles.ghostBtn}
+                                        onClick={() => {
+                                            setMFile(null);
+                                            setMLabel('');
+                                            setMFileErr(null);
+                                            setMLabelErr(null);
+                                            setMonoMsg(null);
+                                        }}
+                                        disabled={mUploading}
+                                    >
                                         Wyczyść
                                     </button>
+
+                                    {/* komunikat obok przycisków */}
+                                    <div style={{ minWidth: 240, flex: 1 }}>
+                                        <InlineNotice msg={monoMsg} />
+                                    </div>
                                 </div>
                             </form>
                         </div>
-
-
 
                         <div className={styles.actionsCard} style={{ marginTop: 16 }}>
                             <h3>Zadania (MONO)</h3>
@@ -1247,9 +1419,15 @@ export default function ETLAdminPage() {
                                         >
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                 <div style={{ fontWeight: 900 }}>
-                                                    jobId: {j.jobId} {j.versionId ? `• v${j.versionId}` : ''}
+                                                    Zadanie #{j.jobId} {j.versionId ? `• v${j.versionId}` : ''}
                                                 </div>
-                                                <div className={styles.muted}>{j.type ?? '—'} {j.error ? `• error: ${j.error}` : ''}</div>
+                                                <div className={styles.muted}>
+                                                    {j.type ?? '—'}
+                                                    {typeof j.progressPercent === 'number' ? ` • ${j.progressPercent}%` : ''}
+                                                    {j.phase ? ` • ${j.phase}` : ''}
+                                                    {j.error ? ` • błąd: ${translateBackendMessage(j.error)}` : ''}
+                                                    {!j.error && j.message ? ` • ${translateBackendMessage(j.message)}` : ''}
+                                                </div>
                                             </div>
                                             <span className={`${styles.badge} ${badgeClassForJob(j.status)}`}>{j.status ?? '—'}</span>
                                         </div>
@@ -1274,27 +1452,27 @@ export default function ETLAdminPage() {
                     <div className={styles.empty}>Brak danych.</div>
                 ) : (
                     <div className={styles.kvGrid}>
-                        <div className={styles.kvKey}>ID</div>
-                        <div className={styles.kvVal}>{versionDetails.id ?? versionDetails.versionId ?? '—'}</div>
+                        <div className={styles.kvKey}>Wersja</div>
+                        <div className={styles.kvVal}>v{versionDetails.id ?? versionDetails.versionId ?? '—'}</div>
 
                         <div className={styles.kvKey}>Label</div>
                         <div className={styles.kvVal}>{versionDetails.label ?? '—'}</div>
 
-                        <div className={styles.kvKey}>Source filename</div>
+                        <div className={styles.kvKey}>Plik</div>
                         <div className={styles.kvVal}>{versionDetails.sourceFilename ?? '—'}</div>
 
-                        <div className={styles.kvKey}>Journals</div>
+                        <div className={styles.kvKey}>Czasopisma</div>
                         <div className={styles.kvVal}>{versionDetails.journals ?? '—'}</div>
 
-                        <div className={styles.kvKey}>Journal codes</div>
+                        <div className={styles.kvKey}>Kody</div>
                         <div className={styles.kvVal}>{versionDetails.journalCodes ?? '—'}</div>
 
-                        {'active' in versionDetails && (
+                        {'isActive' in versionDetails || 'active' in versionDetails ? (
                             <>
-                                <div className={styles.kvKey}>Active</div>
-                                <div className={styles.kvVal}>{String(!!versionDetails.active)}</div>
+                                <div className={styles.kvKey}>Aktywna</div>
+                                <div className={styles.kvVal}>{String(!!(versionDetails.isActive ?? versionDetails.active))}</div>
                             </>
-                        )}
+                        ) : null}
                     </div>
                 )}
             </Modal>
@@ -1317,11 +1495,8 @@ export default function ETLAdminPage() {
                 ) : journalModalData ? (
                     <>
                         <div className={styles.kvGrid} style={{ marginBottom: 12 }}>
-                            <div className={styles.kvKey}>UID</div>
-                            <div className={styles.kvVal}>{journalModalData?.uid ?? '—'}</div>
-
                             <div className={styles.kvKey}>Tytuł 1</div>
-                            <div className={styles.kvVal}>{journalModalData?.title1 ?? '—'}</div>
+                            <div className={styles.kvVal}>{journalModalData?.title1 ?? journalModalData?.title ?? '—'}</div>
 
                             <div className={styles.kvKey}>Tytuł 2</div>
                             <div className={styles.kvVal}>{journalModalData?.title2 ?? '—'}</div>
@@ -1349,8 +1524,8 @@ export default function ETLAdminPage() {
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                 {journalModalData.codes.slice(0, 80).map((c: any, idx: number) => (
                                     <span key={idx} className={`${styles.badge} ${styles.badgeMuted}`}>
-                    {c.code} — {c.name}
-                  </span>
+                                        {c.code} — {c.name}
+                                    </span>
                                 ))}
                             </div>
                         )}
@@ -1377,32 +1552,23 @@ export default function ETLAdminPage() {
                         Błąd: {monoVersionModalError}
                     </div>
                 ) : monoVersionModalData ? (
-                    <>
-                        <div className={styles.kvGrid} style={{ marginBottom: 12 }}>
-                            <div className={styles.kvKey}>ID</div>
-                            <div className={styles.kvVal}>{monoVersionModalData?.id ?? '—'}</div>
+                    <div className={styles.kvGrid}>
+                        <div className={styles.kvKey}>Wersja</div>
+                        <div className={styles.kvVal}>v{monoVersionModalData?.id ?? monoVersionModalData?.versionId ?? '—'}</div>
 
-                            <div className={styles.kvKey}>Label</div>
-                            <div className={styles.kvVal}>{monoVersionModalData?.label ?? '—'}</div>
+                        <div className={styles.kvKey}>Label</div>
+                        <div className={styles.kvVal}>{monoVersionModalData?.label ?? '—'}</div>
 
-                            <div className={styles.kvKey}>Source filename</div>
-                            <div className={styles.kvVal}>{monoVersionModalData?.sourceFilename ?? monoVersionModalData?.filename ?? '—'}</div>
+                        <div className={styles.kvKey}>Plik</div>
+                        <div className={styles.kvVal}>{monoVersionModalData?.sourceFilename ?? monoVersionModalData?.filename ?? '—'}</div>
 
-                            {'publishers' in monoVersionModalData && (
-                                <>
-                                    <div className={styles.kvKey}>Publishers</div>
-                                    <div className={styles.kvVal}>{monoVersionModalData?.publishers ?? '—'}</div>
-                                </>
-                            )}
-                        </div>
-
-                        <details>
-                            <summary className={styles.muted} style={{ cursor: 'pointer' }}>
-                                Pokaż JSON (debug)
-                            </summary>
-                            <pre style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{JSON.stringify(monoVersionModalData, null, 2)}</pre>
-                        </details>
-                    </>
+                        {'publishers' in monoVersionModalData ? (
+                            <>
+                                <div className={styles.kvKey}>Publisherzy</div>
+                                <div className={styles.kvVal}>{monoVersionModalData?.publishers ?? '—'}</div>
+                            </>
+                        ) : null}
+                    </div>
                 ) : (
                     <div className={styles.empty}>Brak danych.</div>
                 )}
@@ -1424,40 +1590,35 @@ export default function ETLAdminPage() {
                         Błąd: {publisherModalError}
                     </div>
                 ) : publisherModalData ? (
-                    <>
-                        <div className={styles.kvGrid} style={{ marginBottom: 12 }}>
-                            <div className={styles.kvKey}>ID</div>
-                            <div className={styles.kvVal}>{publisherModalData?.id ?? publisherModalData?.publisherId ?? '—'}</div>
+                    <div className={styles.kvGrid}>
+                        <div className={styles.kvKey}>Nazwa</div>
+                        <div className={styles.kvVal}>{publisherModalData?.title ?? publisherModalData?.name ?? '—'}</div>
 
-                            <div className={styles.kvKey}>Nazwa</div>
-                            <div className={styles.kvVal}>{publisherModalData?.name ?? publisherModalData?.publisherName ?? publisherModalData?.title ?? '—'}</div>
+                        <div className={styles.kvKey}>Punkty</div>
+                        <div className={styles.kvVal}>{publisherModalData?.points ?? '—'}</div>
 
-                            {'points' in publisherModalData && (
-                                <>
-                                    <div className={styles.kvKey}>Punkty</div>
-                                    <div className={styles.kvVal}>{publisherModalData?.points ?? '—'}</div>
-                                </>
-                            )}
+                        <div className={styles.kvKey}>Poziom</div>
+                        <div className={styles.kvVal}>{publisherModalData?.level ?? '—'}</div>
 
-                            {'monographs' in publisherModalData && (
-                                <>
-                                    <div className={styles.kvKey}>Monografie</div>
-                                    <div className={styles.kvVal}>{publisherModalData?.monographs ?? '—'}</div>
-                                </>
-                            )}
-                        </div>
-
-                        <details>
-                            <summary className={styles.muted} style={{ cursor: 'pointer' }}>
-                                Pokaż JSON (debug)
-                            </summary>
-                            <pre style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{JSON.stringify(publisherModalData, null, 2)}</pre>
-                        </details>
-                    </>
+                        <div className={styles.kvKey}>Wersja</div>
+                        <div className={styles.kvVal}>{publisherModalData?.versionId ? `v${publisherModalData.versionId}` : '—'}</div>
+                    </div>
                 ) : (
                     <div className={styles.empty}>Brak danych.</div>
                 )}
             </Modal>
+
+            {/* ===================== CONFIRM MODAL (shared) ===================== */}
+            <ConfirmModal
+                open={confirmOpen}
+                title={confirmTitle}
+                message={confirmMessage}
+                onCancel={closeConfirm}
+                onConfirm={() => void (confirmActionRef.current ? confirmActionRef.current() : Promise.resolve())}
+                confirmText="Potwierdź"
+                cancelText="Anuluj"
+                loading={false}
+            />
         </div>
     );
 }

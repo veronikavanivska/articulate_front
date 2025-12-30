@@ -48,6 +48,7 @@ type CycleItem = {
     active: boolean;
     activeYear?: number | null;
     meinVersionId?: number | null;
+    // backend często ma monoVersionId, w UI trzymamy meinMonoVersionId
     meinMonoVersionId?: number | null;
 };
 
@@ -74,6 +75,126 @@ type MeinMonoVersion = {
     status?: string | null;
 };
 
+type UiMessagePayload = { type: 'error' | 'success' | 'info'; text: string };
+type UiMessage = UiMessagePayload | null;
+
+// ===================== TŁUMACZENIE BŁĘDÓW (BEZ ID) =====================
+function translateBackendMessage(msg: string): string {
+    const raw = String(msg || '').trim();
+    if (!raw) return 'Wystąpił błąd.';
+
+    // 1) Jeśli backend zwrócił JSON jako tekst, wyciągnij message/error i przetłumacz to
+    if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('[') && raw.endsWith(']'))) {
+        const obj: any = safeJsonParse(raw);
+        if (obj) {
+            // typowe pola
+            const inner =
+                (typeof obj.message === 'string' && obj.message) ||
+                (typeof obj.error === 'string' && obj.error) ||
+                (typeof obj.description === 'string' && obj.description) ||
+                (typeof obj.details === 'string' && obj.details) ||
+                '';
+
+            if (inner) return translateBackendMessage(inner);
+
+            // fallback po code (gdy brak message)
+            const code = String(obj.code ?? '').toUpperCase();
+            if (code === 'ALREADY_EXISTS') return 'Element o tej nazwie już istnieje.';
+            if (code === 'NOT_FOUND') return 'Nie znaleziono zasobu.';
+            if (code === 'INVALID_ARGUMENT') return 'Nieprawidłowe dane wejściowe.';
+            if (code === 'FAILED_PRECONDITION') return 'Nie można wykonać operacji w obecnym stanie.';
+        }
+    }
+
+    // 2) Normalny tekst
+    const m = raw;
+
+    // HTTP fallback
+    if (/^HTTP\s+\d+/i.test(m)) return 'Wystąpił błąd serwera. Spróbuj ponownie.';
+
+    // =========================
+    // ETL / MEiN / MONO
+    // =========================
+    if (m === 'Not found the mein version') return 'Nie znaleziono wersji MEiN.';
+    if (m === 'No MEiN article version with this id') return 'Nie znaleziono wersji MEiN (artykuły).';
+    if (m === 'Not found the cycle') return 'Nie znaleziono cyklu ewaluacji.';
+    if (m === 'This version is already active') return 'Ta wersja jest już aktywna.';
+    if (m === 'This mein is now active') return 'Wersja MEiN została ustawiona jako aktywna.';
+    if (m === 'This version is already deactivate') return 'Ta wersja jest już zdezaktywowana.';
+    if (m === 'This mein is now deactivate') return 'Wersja MEiN została zdezaktywowana.';
+
+    if (m === 'Mein version mono not found') return 'Nie znaleziono wersji MEiN (monografie).';
+    if (m === 'Mein publisher not found') return 'Nie znaleziono wydawnictwa.';
+    if (m === 'Not found the mein mono version') return 'Nie znaleziono wersji MEiN (monografie).';
+    if (m === 'No MeinMonoVersion with this id') return 'Nie znaleziono wersji MEiN (monografie).';
+
+    if (m === 'MEiN version deletion started or already in progress')
+        return 'Usuwanie wersji MEiN (artykuły) zostało uruchomione lub już trwa.';
+    if (m === 'MEiN mono version deletion started or already in progress')
+        return 'Usuwanie wersji MEiN (monografie) zostało uruchomione lub już trwa.';
+
+    if (m === 'Article recalculation started or already in progress')
+        return 'Przeliczanie punktów (artykuły) zostało uruchomione lub już trwa.';
+    if (m === 'Monograph cycle recalculation started or already in progress')
+        return 'Przeliczanie punktów (monografie) zostało uruchomione lub już trwa.';
+
+    if (m === 'Job not found') return 'Nie znaleziono zadania.';
+
+    // =========================
+    // ArticleService – getActiveEvalCycle()
+    // =========================
+    if (m === 'No active eval cycle') return 'Brak aktywnego cyklu ewaluacji.';
+    if (m === 'Active eval cycle has no activeYear set.') return 'Aktywny cykl nie ma ustawionego roku aktywnego.';
+    if (m === 'activeYear is outside cycle range.') return 'Rok aktywny jest poza zakresem cyklu.';
+
+    // =========================
+    // AdminArticleService – walidacje
+    // =========================
+    if (m === 'disciplineName is required.') return 'Podaj nazwę dyscypliny.';
+    if (m === 'publicationType name is required.') return 'Podaj nazwę typu publikacji.';
+    if (m === 'name is required.') return 'Podaj nazwę cyklu.';
+    if (m === 'name must not be blank.') return 'Nazwa cyklu nie może być pusta.';
+
+    if (m === 'yearFrom and yearTo must be positive.') return 'Rok „od” i „do” muszą być dodatnie.';
+    if (m === 'yearFrom cannot be greater than yearTo.') return 'Rok „od” nie może być większy niż rok „do”.';
+
+    if (m === 'activeYear is required when isActive=true.') return 'Podaj rok aktywny, gdy cykl ma być aktywny.';
+    if (m === 'activeYear must be within yearFrom..yearTo.') return 'Rok aktywny musi mieścić się w zakresie cyklu.';
+
+    if (m === 'The provided year range overlaps an existing evaluation cycle.')
+        return 'Zakres lat nachodzi na istniejący cykl ewaluacji.';
+
+    // NOT FOUND (bez ID)
+    if (m.startsWith('Discipline not found')) return 'Nie znaleziono dyscypliny.';
+    if (m.startsWith('Publication type not found')) return 'Nie znaleziono typu publikacji.';
+    if (m.startsWith('Evaluation cycle not found')) return 'Nie znaleziono cyklu ewaluacji.';
+    if (m.startsWith('EvalCycle not found')) return 'Nie znaleziono cyklu ewaluacji.';
+
+    // ALREADY EXISTS – prosto i bez ID
+    if (m === 'Publication Type with this name already exists') return 'Typ publikacji o tej nazwie już istnieje.';
+    if (/PublicationType\s+".+"\s+already exists\./i.test(m)) return 'Typ publikacji o tej nazwie już istnieje.';
+    if (/Discipline\s+".+"\s+already exists\./i.test(m)) return 'Dyscyplina o tej nazwie już istnieje.';
+    if (/Evaluation cycle\s+".+"\s+already exists\./i.test(m)) return 'Cykl o tej nazwie już istnieje.';
+    if (/ALREADY_EXISTS/i.test(m) || /already exists/i.test(m)) return 'Element o tej nazwie już istnieje.';
+
+    // literówka backendu
+    if (m === 'Publication Type name cabbot be empty') return 'Nazwa typu publikacji nie może być pusta.';
+
+    // wersje MEiN po ID – bez ID
+    if (/^meinVersionId not found:/i.test(m)) return 'Nie znaleziono wersji MEiN (artykuły).';
+    if (/^monoVersionId not found:/i.test(m)) return 'Nie znaleziono wersji MEiN (monografie).';
+    if (m === 'Mein Version not found') return 'Nie znaleziono wersji MEiN.';
+
+    return m;
+}
+
+function normalizeErr(e: any): string {
+    const raw = String(e?.message ?? e ?? '').trim();
+    return translateBackendMessage(raw);
+}
+
+
+// ===================== HELPERS =====================
 function isJobDone(status?: string) {
     const s = String(status ?? '').toUpperCase();
     return ['DONE', 'SUCCESS', 'FINISHED', 'FAILED', 'ERROR', 'CANCELLED'].includes(s);
@@ -111,12 +232,34 @@ function asNullIfZero(v: any): number | null {
     return n;
 }
 
-function friendlyCycleSaveError(raw: string): string {
-    const s = String(raw || '');
-    if (/ALREADY_EXISTS/i.test(s) || /already exists/i.test(s)) {
-        return 'Taki cykl już istnieje (nazwa musi być unikalna). Zmień nazwę cyklu.';
+function safeJsonParse(text: string) {
+    try {
+        return text ? JSON.parse(text) : null;
+    } catch {
+        return null;
     }
-    return s || 'Błąd zapisu cyklu.';
+}
+
+function InlineNotice({ msg }: { msg: UiMessage }) {
+    if (!msg) return null;
+
+    const base: React.CSSProperties = {
+        fontSize: 12,
+        fontWeight: 800,
+        padding: '10px 12px',
+        borderRadius: 12,
+        border: '1px solid var(--border)',
+        whiteSpace: 'pre-wrap',
+    };
+
+    const style: React.CSSProperties =
+        msg.type === 'error'
+            ? { ...base, background: '#fff1f2', borderColor: '#fecdd3', color: '#9f1239' }
+            : msg.type === 'success'
+                ? { ...base, background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46' }
+                : { ...base, background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e3a8a' };
+
+    return <div style={style}>{msg.text}</div>;
 }
 
 export default function AdminCatalogPage() {
@@ -141,6 +284,36 @@ export default function AdminCatalogPage() {
     const [cycles, setCycles] = useState<CycleItem[]>([]);
     const [cycleLoading, setCycleLoading] = useState(false);
     const [cycleError, setCycleError] = useState<string | null>(null);
+
+    // ---------- toast/message ----------
+    const [uiMsg, setUiMsg] = useState<UiMessage>(null);
+    const uiMsgT = useRef<number | null>(null);
+    function showMessage(type: UiMessagePayload['type'], text: string) {
+        setUiMsg({ type, text });
+        if (uiMsgT.current) window.clearTimeout(uiMsgT.current);
+        uiMsgT.current = window.setTimeout(() => setUiMsg(null), 4500);
+    }
+
+    // ---------- confirm modal ----------
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [confirmTitle, setConfirmTitle] = useState('Potwierdź');
+    const [confirmBody, setConfirmBody] = useState<string | null>(null);
+    const confirmActionRef = useRef<null | (() => Promise<void> | void)>(null);
+
+    function openConfirm(opts: { title: string; body?: string; onConfirm: () => Promise<void> | void }) {
+        setConfirmTitle(opts.title);
+        setConfirmBody(opts.body ?? null);
+        confirmActionRef.current = opts.onConfirm;
+        setConfirmOpen(true);
+    }
+
+    async function runConfirmAction() {
+        const fn = confirmActionRef.current;
+        setConfirmOpen(false);
+        confirmActionRef.current = null;
+        if (!fn) return;
+        await fn();
+    }
 
     // ---------- recalc ----------
     const [selectedCycleId, setSelectedCycleId] = useState<number | null>(null);
@@ -223,7 +396,7 @@ export default function AdminCatalogPage() {
                         const text = await res.text().catch(() => '');
                         if (!res.ok) return;
 
-                        const data = text ? JSON.parse(text) : null;
+                        const data = safeJsonParse(text);
                         const nextStatus = data?.status ?? j.status;
                         const done = isJobDone(nextStatus);
 
@@ -267,12 +440,12 @@ export default function AdminCatalogPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
-            setDisciplines((data?.item ?? data?.items ?? []) as RefItem[]);
-            setPageMeta(data?.pageMeta ?? { page, size });
+            const data = safeJsonParse(text);
+            setDisciplines((data?.items ?? data?.item ?? []) as RefItem[]);
+            setPageMeta((data?.pageMeta ?? data?.page ?? { page, size }) as PageMeta);
         } catch (e: any) {
             setDisciplines([]);
-            setDiscError(String(e?.message ?? e));
+            setDiscError(normalizeErr(e));
         } finally {
             setDiscLoading(false);
         }
@@ -291,12 +464,12 @@ export default function AdminCatalogPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
-            setTypes((data?.item ?? data?.items ?? []) as RefItem[]);
-            setPageMeta(data?.pageMeta ?? { page, size });
+            const data = safeJsonParse(text);
+            setTypes((data?.items ?? data?.item ?? []) as RefItem[]);
+            setPageMeta((data?.pageMeta ?? data?.page ?? { page, size }) as PageMeta);
         } catch (e: any) {
             setTypes([]);
-            setTypeError(String(e?.message ?? e));
+            setTypeError(normalizeErr(e));
         } finally {
             setTypeLoading(false);
         }
@@ -315,12 +488,29 @@ export default function AdminCatalogPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
-            setCycles((data?.item ?? data?.items ?? []) as CycleItem[]);
-            setPageMeta(data?.pageMeta ?? { page, size });
+            const data = safeJsonParse(text);
+            const rawItems = (data?.items ?? data?.item ?? []) as any[];
+
+            const mapped: CycleItem[] = (Array.isArray(rawItems) ? rawItems : []).map((c: any) => {
+                const active = Boolean(c?.isActive ?? c?.active);
+                const monoId = asNullIfZero(c?.monoVersionId ?? c?.meinMonoVersionId ?? c?.meinMonoVersion_id);
+                return {
+                    id: Number(c?.id ?? 0),
+                    name: String(c?.name ?? ''),
+                    yearFrom: Number(c?.yearFrom ?? 0),
+                    yearTo: Number(c?.yearTo ?? 0),
+                    active,
+                    activeYear: asNullIfZero(c?.activeYear),
+                    meinVersionId: asNullIfZero(c?.meinVersionId),
+                    meinMonoVersionId: monoId,
+                };
+            });
+
+            setCycles(mapped.filter((x) => x.id > 0));
+            setPageMeta((data?.pageMeta ?? data?.page ?? { page, size }) as PageMeta);
         } catch (e: any) {
             setCycles([]);
-            setCycleError(String(e?.message ?? e));
+            setCycleError(normalizeErr(e));
         } finally {
             setCycleLoading(false);
         }
@@ -339,14 +529,14 @@ export default function AdminCatalogPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
+            const data = safeJsonParse(text);
             const items = data?.items ?? data?.item ?? [];
 
             const mapped: MeinVersion[] = (Array.isArray(items) ? items : []).map((v: any) => ({
                 id: Number(v?.id ?? v?.versionId ?? v?.version_id),
                 label: v?.label ?? null,
                 status: v?.status ?? null,
-                active: v?.active ?? null,
+                active: v?.isActive ?? v?.active ?? null,
             }));
 
             setMeinVersions(mapped.filter((x) => x.id > 0));
@@ -369,7 +559,7 @@ export default function AdminCatalogPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
+            const data = safeJsonParse(text);
             const items = data?.items ?? data?.item ?? [];
 
             const mapped: MeinMonoVersion[] = (Array.isArray(items) ? items : []).map((v: any) => ({
@@ -386,12 +576,10 @@ export default function AdminCatalogPage() {
         }
     }
 
-    // dociągnij dropdowny, gdy otwierasz modal edycji cyklu
+    // dropdowny dociągamy przy edycji cyklu
     useEffect(() => {
         if (!cycleModalOpen) return;
         if (!cycleModalIsEdit) return;
-
-        // zawsze odśwież (żeby lista była aktualna)
         fetchMeinVersionsForDropdown();
         fetchMeinMonoVersionsForDropdown();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -414,7 +602,7 @@ export default function AdminCatalogPage() {
 
     async function saveRef() {
         const name = refModalName.trim();
-        if (!name) return alert('Podaj nazwę');
+        if (!name) return showMessage('error', 'Podaj nazwę.');
 
         const isEdit = refModalId != null;
 
@@ -424,10 +612,12 @@ export default function AdminCatalogPage() {
                     const res = await authFetch(CREATE_DISCIPLINE_URL(name), { method: 'POST' });
                     const t = await res.text().catch(() => '');
                     if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+                    showMessage('success', 'Dyscyplina dodana.');
                 } else {
                     const res = await authFetch(UPDATE_DISCIPLINE_URL(refModalId!, name), { method: 'POST' });
                     const t = await res.text().catch(() => '');
                     if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+                    showMessage('success', 'Dyscyplina zaktualizowana.');
                 }
                 setRefModalOpen(false);
                 fetchDisciplines(pageMeta.page, pageMeta.size);
@@ -438,32 +628,40 @@ export default function AdminCatalogPage() {
                     const res = await authFetch(CREATE_TYPE_URL(name), { method: 'POST' });
                     const t = await res.text().catch(() => '');
                     if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+                    showMessage('success', 'Typ dodany.');
                 } else {
                     const res = await authFetch(UPDATE_TYPE_URL(refModalId!, name), { method: 'POST' });
                     const t = await res.text().catch(() => '');
                     if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+                    showMessage('success', 'Typ zaktualizowany.');
                 }
                 setRefModalOpen(false);
                 fetchTypes(pageMeta.page, pageMeta.size);
             }
         } catch (e: any) {
-            alert(`Błąd zapisu: ${String(e?.message ?? e)}`);
+            showMessage('error', normalizeErr(e));
         }
     }
 
     async function deleteRef(kind: 'discipline' | 'type', id: number) {
-        if (!confirm('Usunąć?')) return;
-        try {
-            const url = kind === 'discipline' ? DELETE_DISCIPLINE_URL(id) : DELETE_TYPE_URL(id);
-            const res = await authFetch(url, { method: 'DELETE' });
-            const t = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+        openConfirm({
+            title: 'Potwierdź usunięcie',
+            body: 'Ta operacja jest nieodwracalna.',
+            onConfirm: async () => {
+                try {
+                    const url = kind === 'discipline' ? DELETE_DISCIPLINE_URL(id) : DELETE_TYPE_URL(id);
+                    const res = await authFetch(url, { method: 'DELETE' });
+                    const t = await res.text().catch(() => '');
+                    if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
 
-            if (kind === 'discipline') fetchDisciplines(pageMeta.page, pageMeta.size);
-            if (kind === 'type') fetchTypes(pageMeta.page, pageMeta.size);
-        } catch (e: any) {
-            alert(`Błąd usuwania: ${String(e?.message ?? e)}`);
-        }
+                    showMessage('success', 'Usunięto.');
+                    if (kind === 'discipline') fetchDisciplines(pageMeta.page, pageMeta.size);
+                    if (kind === 'type') fetchTypes(pageMeta.page, pageMeta.size);
+                } catch (e: any) {
+                    showMessage('error', normalizeErr(e));
+                }
+            },
+        });
     }
 
     // ====== ACTIONS: CYCLES ======
@@ -482,7 +680,6 @@ export default function AdminCatalogPage() {
     function openEditCycle(item: CycleItem) {
         setCycleModalIsEdit(true);
 
-        // WAŻNE: 0 -> null (żeby nie wysyłać do backendu "0")
         const sanitized: Partial<CycleItem> = {
             ...item,
             activeYear: asNullIfZero(item.activeYear),
@@ -499,18 +696,17 @@ export default function AdminCatalogPage() {
         const yearFrom = Number(cycleForm.yearFrom ?? 0);
         const yearTo = Number(cycleForm.yearTo ?? 0);
 
-        if (!name) return alert('Podaj nazwę');
-        if (!yearFrom || !yearTo) return alert('Podaj yearFrom i yearTo');
+        if (!name) return showMessage('error', 'Podaj nazwę.');
+        if (!yearFrom || !yearTo) return showMessage('error', 'Podaj rok „od” i „do”.');
 
         try {
             if (!cycleModalIsEdit) {
-                const body = {
+                const body: any = {
                     name,
                     yearFrom,
                     yearTo,
-                    active: Boolean(cycleForm.active),
                     isActive: Boolean(cycleForm.active),
-                    activeYear: asNullIfZero(cycleForm.activeYear),
+                    activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
                 };
 
                 const res = await authFetch(CREATE_CYCLE_URL, {
@@ -520,20 +716,22 @@ export default function AdminCatalogPage() {
                 } as RequestInit);
 
                 const t = await res.text().catch(() => '');
-                if (!res.ok) throw new Error(friendlyCycleSaveError(t || `HTTP ${res.status}`));
+                if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+
+                showMessage('success', 'Cykl dodany.');
             } else {
                 const id = Number(cycleForm.id ?? 0);
-                if (!id) return alert('Brak id cyklu');
+                if (!id) return showMessage('error', 'Brak cyklu do zapisu.');
 
-                const body = {
+                const body: any = {
                     id,
                     name,
                     yearFrom,
                     yearTo,
-                    active: Boolean(cycleForm.active),
-                    meinVersionId: asNullIfZero(cycleForm.meinVersionId),
-                    meinMonoVersionId: asNullIfZero(cycleForm.meinMonoVersionId),
-                    activeYear: asNullIfZero(cycleForm.activeYear),
+                    isActive: Boolean(cycleForm.active),
+                    meinVersionId: asNullIfZero(cycleForm.meinVersionId) ?? 0,
+                    monoVersionId: asNullIfZero(cycleForm.meinMonoVersionId) ?? 0,
+                    activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
                 };
 
                 const res = await authFetch(UPDATE_CYCLE_URL, {
@@ -543,69 +741,88 @@ export default function AdminCatalogPage() {
                 } as RequestInit);
 
                 const t = await res.text().catch(() => '');
-                if (!res.ok) throw new Error(friendlyCycleSaveError(t || `HTTP ${res.status}`));
+                if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+
+                showMessage('success', 'Cykl zapisany.');
             }
 
             setCycleModalOpen(false);
             fetchCycles(pageMeta.page, pageMeta.size);
         } catch (e: any) {
-            alert(`Błąd zapisu cyklu: ${String(e?.message ?? e)}`);
+            showMessage('error', normalizeErr(e));
         }
     }
 
     async function deleteCycle(id: number) {
-        if (!confirm('Usunąć cykl?')) return;
-        try {
-            const res = await authFetch(DELETE_CYCLE_URL(id), { method: 'DELETE' });
-            const t = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
-            fetchCycles(pageMeta.page, pageMeta.size);
-        } catch (e: any) {
-            alert(`Błąd usuwania cyklu: ${String(e?.message ?? e)}`);
-        }
+        openConfirm({
+            title: 'Potwierdź usunięcie cyklu',
+            body: 'Usunięcie cyklu może wpłynąć na dane i przeliczenia.',
+            onConfirm: async () => {
+                try {
+                    const res = await authFetch(DELETE_CYCLE_URL(id), { method: 'DELETE' });
+                    const t = await res.text().catch(() => '');
+                    if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+                    showMessage('success', 'Cykl usunięty.');
+                    fetchCycles(pageMeta.page, pageMeta.size);
+                } catch (e: any) {
+                    showMessage('error', normalizeErr(e));
+                }
+            },
+        });
     }
 
     // ====== PRZELICZANIE ======
     async function startRecalc(cycleId: number, kind: 'ARTICLES' | 'MONOS') {
-        try {
-            const url = kind === 'ARTICLES' ? RECALC_ARTICLES_URL(cycleId) : RECALC_MONO_URL(cycleId);
+        openConfirm({
+            title: 'Uruchomić przeliczenie?',
+            body:
+                kind === 'ARTICLES'
+                    ? 'To uruchomi przeliczenie punktów artykułów dla wybranego cyklu.'
+                    : 'To uruchomi przeliczenie punktów monografii dla wybranego cyklu.',
+            onConfirm: async () => {
+                try {
+                    const url = kind === 'ARTICLES' ? RECALC_ARTICLES_URL(cycleId) : RECALC_MONO_URL(cycleId);
 
-            const res = await authFetch(url, { method: 'POST' });
-            const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+                    const res = await authFetch(url, { method: 'POST' });
+                    const text = await res.text().catch(() => '');
+                    if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
 
-            const data = text ? JSON.parse(text) : null;
-            const jobId = Number(data?.jobId ?? data?.id ?? 0);
+                    const data = safeJsonParse(text);
+                    const jobId = Number(data?.jobId ?? data?.id ?? 0);
 
-            if (!jobId) {
-                alert('Uruchomiono przeliczenie, ale brak jobId w odpowiedzi.');
-                return;
-            }
+                    if (!jobId) {
+                        showMessage('error', 'Uruchomiono przeliczenie, ale brak identyfikatora zadania w odpowiedzi.');
+                        return;
+                    }
 
-            setRecalcJobs((prev) => [
-                {
-                    jobId,
-                    cycleId,
-                    status: 'RUNNING',
-                    type: kind === 'ARTICLES' ? 'RECALC_ARTICLE_POINTS' : 'RECALC_MONO_POINTS',
-                    error: null,
-                    createdAt: Date.now(),
-                    done: false,
-                },
-                ...prev,
-            ]);
-        } catch (e: any) {
-            alert(`Błąd przeliczenia: ${String(e?.message ?? e)}`);
-        }
+                    showMessage('success', 'Przeliczenie uruchomione.');
+
+                    setRecalcJobs((prev) => [
+                        {
+                            jobId,
+                            cycleId,
+                            status: 'RUNNING',
+                            type: kind === 'ARTICLES' ? 'RECALC_CYCLE_SCORES' : 'RECALC_MONO_CYCLE_SCORES',
+                            error: null,
+                            createdAt: Date.now(),
+                            done: false,
+                        },
+                        ...prev,
+                    ]);
+                } catch (e: any) {
+                    showMessage('error', normalizeErr(e));
+                }
+            },
+        });
     }
 
     async function recalcArticlesForSelectedCycle() {
-        if (!selectedCycleId) return alert('Wybierz cykl');
+        if (!selectedCycleId) return showMessage('error', 'Wybierz cykl.');
         await startRecalc(selectedCycleId, 'ARTICLES');
     }
 
     async function recalcMonosForSelectedCycle() {
-        if (!selectedCycleId) return alert('Wybierz cykl');
+        if (!selectedCycleId) return showMessage('error', 'Wybierz cykl.');
         await startRecalc(selectedCycleId, 'MONOS');
     }
 
@@ -639,7 +856,6 @@ export default function AdminCatalogPage() {
         return cycles.length;
     }, [tab, disciplines.length, types.length, cycles.length]);
 
-    // UWAGA: return dopiero po hookach
     if (!initialized) return <div className={styles.page}>Ładowanie…</div>;
 
     return (
@@ -680,6 +896,9 @@ export default function AdminCatalogPage() {
                 </div>
             </header>
 
+            {/* komunikat u góry */}
+            <InlineNotice msg={uiMsg} />
+
             <div className={styles.contentRow}>
                 {/* LEFT */}
                 <div className={styles.leftColumn}>
@@ -710,9 +929,9 @@ export default function AdminCatalogPage() {
 
                                     <div className={styles.cardBottom}>
                                         <div className={styles.badgeRow}>
-                      <span className={`${styles.badge} ${c.active ? styles.badgeWorker : styles.badgeMuted}`}>
-                        {c.active ? 'Aktywny' : 'Nieaktywny'}
-                      </span>
+                                            <span className={`${styles.badge} ${c.active ? styles.badgeWorker : styles.badgeMuted}`}>
+                                                {c.active ? 'Aktywny' : 'Nieaktywny'}
+                                            </span>
                                         </div>
                                         <div style={{ display: 'flex', gap: 8 }}>
                                             <button className={styles.infoBtn} onClick={() => openEditCycle(c)}>
@@ -734,19 +953,22 @@ export default function AdminCatalogPage() {
                                         <div className={styles.avatarSmall}>{x.name.slice(0, 2).toUpperCase()}</div>
                                         <div className={styles.cardMeta}>
                                             <div className={styles.name}>{x.name}</div>
-                                            <div className={styles.muted}>ID: {x.id}</div>
+                                            <div className={styles.muted}>{tab === 'disciplines' ? 'Dyscyplina' : 'Typ'}</div>
                                         </div>
                                     </div>
 
                                     <div className={styles.cardBottom}>
-                                        <div className={styles.badgeRow}>
-                                            <span className={`${styles.badge} ${styles.badgeMuted}`}>{tab === 'disciplines' ? 'Dyscyplina' : 'Typ'}</span>
-                                        </div>
                                         <div style={{ display: 'flex', gap: 8 }}>
-                                            <button className={styles.infoBtn} onClick={() => openEditRef(tab === 'disciplines' ? 'discipline' : 'type', x)}>
+                                            <button
+                                                className={styles.infoBtn}
+                                                onClick={() => openEditRef(tab === 'disciplines' ? 'discipline' : 'type', x)}
+                                            >
                                                 Edytuj
                                             </button>
-                                            <button className={styles.dangerBtn} onClick={() => deleteRef(tab === 'disciplines' ? 'discipline' : 'type', x.id)}>
+                                            <button
+                                                className={styles.dangerBtn}
+                                                onClick={() => deleteRef(tab === 'disciplines' ? 'discipline' : 'type', x.id)}
+                                            >
                                                 Usuń
                                             </button>
                                         </div>
@@ -866,7 +1088,12 @@ export default function AdminCatalogPage() {
                 <div style={{ display: 'grid', gap: 10 }}>
                     <label style={{ display: 'grid', gap: 6 }}>
                         <span className={styles.muted}>Nazwa</span>
-                        <input className={styles.searchInput} placeholder="np. Informatyka" value={refModalName} onChange={(e) => setRefModalName(e.target.value)} />
+                        <input
+                            className={styles.searchInput}
+                            placeholder="np. Informatyka"
+                            value={refModalName}
+                            onChange={(e) => setRefModalName(e.target.value)}
+                        />
                     </label>
 
                     <div style={{ display: 'flex', gap: 10 }}>
@@ -916,7 +1143,11 @@ export default function AdminCatalogPage() {
                     </div>
 
                     <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <input type="checkbox" checked={Boolean(cycleForm.active)} onChange={(e) => setCycleForm((p) => ({ ...p, active: e.target.checked }))} />
+                        <input
+                            type="checkbox"
+                            checked={Boolean(cycleForm.active)}
+                            onChange={(e) => setCycleForm((p) => ({ ...p, active: e.target.checked }))}
+                        />
                         Aktywny cykl
                     </label>
 
@@ -930,8 +1161,8 @@ export default function AdminCatalogPage() {
                             onChange={(e) => setCycleForm((p) => ({ ...p, activeYear: e.target.value ? Number(e.target.value) : null }))}
                         />
                         <span className={styles.muted} style={{ fontSize: 12 }}>
-              Zostaw puste, jeśli nie używasz tej logiki. Unikaj wartości 0.
-            </span>
+                            Zostaw puste, jeśli nie używasz tej logiki. Unikaj wartości 0.
+                        </span>
                     </label>
 
                     {cycleModalIsEdit && (
@@ -951,13 +1182,10 @@ export default function AdminCatalogPage() {
                                         </option>
                                     ))}
                                 </select>
-                                <span className={styles.muted} style={{ fontSize: 12 }}>
-                  To jest wersja MEiN dla artykułów/czasopism. Cykl będzie ją używał do przeliczeń / mapowań.
-                </span>
                             </div>
 
                             <div style={{ display: 'grid', gap: 6 }}>
-                                <span className={styles.muted}>MEiN — wersja monografii (meinMonoVersionId)</span>
+                                <span className={styles.muted}>MEiN — wersja monografii (monoVersionId)</span>
                                 <select
                                     className={styles.searchInput}
                                     value={asNullIfZero(cycleForm.meinMonoVersionId) ?? ''}
@@ -971,9 +1199,6 @@ export default function AdminCatalogPage() {
                                         </option>
                                     ))}
                                 </select>
-                                <span className={styles.muted} style={{ fontSize: 12 }}>
-                  To jest wersja MEiN dla monografii. Unikaj ustawiania 0 – puste = null.
-                </span>
                             </div>
                         </>
                     )}
@@ -984,6 +1209,25 @@ export default function AdminCatalogPage() {
                         </button>
                         <button className={styles.ghostBtn} onClick={() => setCycleModalOpen(false)}>
                             Anuluj
+                        </button>
+                    </div>
+                </div>
+            </Modal>
+
+            {/* CONFIRM MODAL */}
+            <Modal open={confirmOpen} title={confirmTitle} onClose={() => setConfirmOpen(false)}>
+                <div style={{ display: 'grid', gap: 12 }}>
+                    {confirmBody && (
+                        <div className={styles.muted} style={{ whiteSpace: 'pre-line' }}>
+                            {confirmBody}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                        <button className={styles.ghostBtn} onClick={() => setConfirmOpen(false)}>
+                            Anuluj
+                        </button>
+                        <button className={styles.primaryBtn} onClick={runConfirmAction}>
+                            Potwierdź
                         </button>
                     </div>
                 </div>
