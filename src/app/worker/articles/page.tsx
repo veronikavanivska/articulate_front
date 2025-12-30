@@ -75,7 +75,6 @@ function translateBackendMessage(raw: string): string {
     const text = String(raw ?? '').trim();
     if (!text) return 'Wystąpił błąd.';
 
-    // jeśli backend zwraca JSON {message, code, ...}
     const j = safeJson(text);
     const msg =
         (typeof j?.message === 'string' && j.message) ||
@@ -109,7 +108,17 @@ function translateBackendMessage(raw: string): string {
     if (m === 'This is not yours publication, you cannot delete it') return 'Nie możesz usunąć tej publikacji.';
     if (m === 'Deleted') return 'Usunięto.';
 
-    // fallback: jak jest bardzo techniczne — oddaj, ale bez ID
+    // ===== SlotService (limity / cykl aktywny / argumenty) =====
+    if (m === 'No active eval cycle / activeYear.') return 'Brak aktywnego cyklu/roku ewaluacji.';
+    if (m === 'userId/disciplineId/itemId must be positive.') return 'Nieprawidłowe dane żądania (identyfikatory muszą być dodatnie).';
+
+    // Slot limit exceeded. usedAfter=... max=...
+    if (/^Slot limit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla tej dyscypliny.';
+
+    // Mono sublimit exceeded. usedMonoAfter=... maxMono=...
+    if (/^Mono sublimit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla monografii (mono) w tej dyscyplinie.';
+
+    // fallback
     return m;
 }
 
@@ -507,25 +516,96 @@ export default function WorkerArticlesPage() {
             setModalLoading(false);
         }
     }
+    function validateRequiredPublicationFields(input: {
+        title: any;
+        typeId: any;
+        disciplineId: any;
+        journalTitle: any;
+        publicationYear: any;
+        issn: any;
+        eissn: any;
+        coauthors: any;
+    }): { ok: true } | { ok: false; message: string } {
+        const title = String(input.title ?? '').trim();
+        const journalTitle = String(input.journalTitle ?? '').trim();
+        const issn = String(input.issn ?? '').trim();
+        const eissn = String(input.eissn ?? '').trim();
 
+        const typeId = Number(input.typeId) || 0;
+        const disciplineId = Number(input.disciplineId) || 0;
+
+        const yearRaw = String(input.publicationYear ?? '').trim();
+        const year = yearRaw ? toIntOrNull(yearRaw) : null;
+
+        // współautorzy: dopuszczamy różne kształty, liczy się realna lista po filtrze
+        const coArr = Array.isArray(input.coauthors) ? input.coauthors : [];
+        const coFiltered = coArr
+            .map((c: any) => ({
+                userId: Number(c?.userId ?? 0) || 0,
+                fullName: String(c?.fullName ?? '').trim(),
+                unitName: c?.unitName ?? null,
+            }))
+            .filter((c: any) => c.fullName.length > 0);
+
+        const missing: string[] = [];
+        if (!title) missing.push('Tytuł publikacji');
+        if (typeId <= 0) missing.push('Typ publikacji');
+        if (disciplineId <= 0) missing.push('Dyscyplina');
+        if (!journalTitle) missing.push('Tytuł czasopisma');
+        if (!year) missing.push('Rok publikacji');
+        if (!issn && !eissn) missing.push('ISSN lub EISSN');
+        if (coFiltered.length === 0) missing.push('Współautorzy');
+
+        if (missing.length > 0) {
+            return { ok: false, message: `Uzupełnij wymagane pola:\n• ${missing.join('\n• ')}` };
+        }
+
+        return { ok: true };
+    }
     async function createPublication(e?: React.FormEvent) {
         e?.preventDefault();
         if (creating) return;
 
+        const v = validateRequiredPublicationFields({
+            title: createForm.title,
+            typeId: createForm.typeId,
+            disciplineId: createForm.disciplineId,
+            journalTitle: createForm.journalTitle,
+            publicationYear: createForm.publicationYear,
+            issn: createForm.issn,
+            eissn: createForm.eissn,
+            coauthors: createForm.coauthors,
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
         setCreating(true);
         try {
+            const title = String(createForm.title ?? '').trim();
+            const journalTitle = String(createForm.journalTitle ?? '').trim();
+            const issn = String(createForm.issn ?? '').trim();
+            const eissn = String(createForm.eissn ?? '').trim();
+            const year = toIntOrNull(String(createForm.publicationYear ?? '').trim());
+
             const body = {
-                typeId: createForm.typeId > 0 ? createForm.typeId : null,
-                disciplineId: createForm.disciplineId > 0 ? createForm.disciplineId : null,
-                title: createForm.title?.trim() || null,
+                typeId: Number(createForm.typeId) || 0,
+                disciplineId: Number(createForm.disciplineId) || 0,
+                title: title || null,
                 doi: String(createForm.doi ?? '').trim(),
-                issn: String(createForm.issn ?? '').trim(),
-                eissn: String(createForm.eissn ?? '').trim(),
-                journalTitle: createForm.journalTitle?.trim() || null,
-                publicationYear: createForm.publicationYear ? toIntOrNull(createForm.publicationYear) : null,
+                issn,
+                eissn,
+                journalTitle: journalTitle || null,
+                publicationYear: year,
                 coauthors: (Array.isArray(createForm.coauthors) ? createForm.coauthors : [])
-                    .map((c: any) => ({ userId: Number(c?.userId ?? 0) || 0, fullName: String(c?.fullName ?? '').trim() }))
-                    .filter((c) => c.fullName.length > 0),
+                    .map((c: any) => ({
+                        userId: Number(c?.userId ?? 0) || 0,
+                        fullName: String(c?.fullName ?? '').trim(),
+                        unitName: c?.unitName ?? null,
+                    }))
+                    .filter((c: any) => c.fullName.length > 0),
             };
 
             const res = await authFetch(CREATE_ARTICLE_URL, {
@@ -571,31 +651,52 @@ export default function WorkerArticlesPage() {
             return;
         }
 
+        const v = validateRequiredPublicationFields({
+            title: draft.title,
+            typeId: draft.typeId,
+            disciplineId: draft.disciplineId,
+            journalTitle: draft.journalTitle,
+            publicationYear: draft.publicationYear,
+            issn: draft.issn,
+            eissn: draft.eissn,
+            coauthors: draft.replaceCoauthors, // w modalu trzymasz to pod replaceCoauthors
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
         setSavingDraft(true);
         try {
+            const title = String(draft.title ?? '').trim();
+            const journalTitle = String(draft.journalTitle ?? '').trim();
+            const issn = String(draft.issn ?? '').trim();
+            const eissn = String(draft.eissn ?? '').trim();
+            const year = toIntOrNull(String(draft.publicationYear ?? '').trim());
+
             const body = {
-                id: draft.id ? Number(draft.id) : null,
-                typeId: draft.typeId ? Number(draft.typeId) : null,
-                disciplineId: draft.disciplineId ? Number(draft.disciplineId) : null,
+                id: publicationId,
+                typeId: Number(draft.typeId) || 0,
+                disciplineId: Number(draft.disciplineId) || 0,
 
-                title: draft.title ?? null,
-                doi: draft.doi ?? null,
+                title: title || null,
+                doi: String(draft.doi ?? '').trim() || null,
 
-                issn: draft.issn ?? null,
-                eissn: draft.eissn ?? null,
+                issn,
+                eissn,
 
-                journalTitle: draft.journalTitle ?? null,
-                publicationYear:
-                    draft.publicationYear != null && String(draft.publicationYear).trim() !== '' ? Number(draft.publicationYear) : null,
+                journalTitle: journalTitle || null,
+                publicationYear: year,
 
-                replaceCoauthors: Array.isArray(draft.replaceCoauthors)
-                    ? draft.replaceCoauthors
-                        .map((c: any) => ({
-                            userId: Number(c?.userId ?? 0) || 0,
-                            fullName: String(c?.fullName ?? '').trim(),
-                        }))
-                        .filter((c: any) => c.fullName.length > 0)
-                    : [],
+                // IMPORTANT: backend w update używa replaceCoauthors
+                replaceCoauthors: (Array.isArray(draft.replaceCoauthors) ? draft.replaceCoauthors : [])
+                    .map((c: any) => ({
+                        userId: Number(c?.userId ?? 0) || 0,
+                        fullName: String(c?.fullName ?? '').trim(),
+                        unitName: c?.unitName ?? null,
+                    }))
+                    .filter((c: any) => c.fullName.length > 0),
             };
 
             const res = await authFetch(`${UPDATE_ARTICLE_URL}?publicationId=${publicationId}`, {
@@ -617,6 +718,7 @@ export default function WorkerArticlesPage() {
                 ? data.coauthors.map((c: any) => ({
                     userId: Number(c.userId ?? c.id ?? 0) || 0,
                     fullName: String(c.fullName ?? c.name ?? '').trim(),
+                    unitName: c?.unitName ?? null,
                 }))
                 : [];
 
@@ -630,6 +732,7 @@ export default function WorkerArticlesPage() {
             setSavingDraft(false);
         }
     }
+
 
     async function deletePublication(id: number) {
         openConfirm({
@@ -788,7 +891,8 @@ export default function WorkerArticlesPage() {
                 </div>
 
                 {/* RIGHT: FILTERS */}
-                <div className={styles.rightColumn}>
+                {/* RIGHT: FILTERS */}
+                <div className={styles.rightColumn} style={{ overflow: 'visible' }}>
                     <div
                         className={styles.actionsCard}
                         style={{
@@ -796,29 +900,13 @@ export default function WorkerArticlesPage() {
                             top: 16,
                             alignSelf: 'flex-start',
                             overflow: 'visible',
-                            width: '100%',
-                            maxWidth: '100%',
+                            zIndex: 50,
                         }}
                     >
                         <h3>Szukaj</h3>
-                        <p>Filtry listy artykułów</p>
+                        <p>Filtry listy monografii</p>
 
-                        <div style={{ display: 'grid', gap: 10 }}>
-                            <input
-                                className={styles.searchInput}
-                                placeholder="Szukaj po tytule publikacji…"
-                                value={titleInput}
-                                onChange={(e) => setTitleInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        const q = titleInput.trim();
-                                        setTitleQuery(q);
-                                        fetchList(0, pageMeta.size ?? 20, q);
-                                    }
-                                }}
-                            />
-
+                        <div style={{ display: 'grid', gap: 10, overflow: 'visible' }}>
                             <SearchSelect
                                 label="Typ"
                                 value={filters.typeId}
@@ -845,6 +933,7 @@ export default function WorkerArticlesPage() {
                                 placeholder="— cykl —"
                                 onChange={(id) => setFilters((p) => ({ ...p, cycleId: Number(id) || 0 }))}
                             />
+
 
                             <div style={{ display: 'flex', gap: 10 }}>
                                 <button

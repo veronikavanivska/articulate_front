@@ -691,13 +691,96 @@ export default function AdminCatalogPage() {
         setCycleModalOpen(true);
     }
 
+    // async function saveCycle() {
+    //     const name = String(cycleForm.name ?? '').trim();
+    //     const yearFrom = Number(cycleForm.yearFrom ?? 0);
+    //     const yearTo = Number(cycleForm.yearTo ?? 0);
+    //
+    //     if (!name) return showMessage('error', 'Podaj nazwę.');
+    //     if (!yearFrom || !yearTo) return showMessage('error', 'Podaj rok „od” i „do”.');
+    //
+    //     try {
+    //         if (!cycleModalIsEdit) {
+    //             const body: any = {
+    //                 name,
+    //                 yearFrom,
+    //                 yearTo,
+    //                 isActive: Boolean(cycleForm.active),
+    //                 activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
+    //             };
+    //
+    //             const res = await authFetch(CREATE_CYCLE_URL, {
+    //                 method: 'POST',
+    //                 headers: { 'Content-Type': 'application/json' },
+    //                 body: JSON.stringify(body),
+    //             } as RequestInit);
+    //
+    //             const t = await res.text().catch(() => '');
+    //             if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+    //
+    //             showMessage('success', 'Cykl dodany.');
+    //         } else {
+    //             const id = Number(cycleForm.id ?? 0);
+    //             if (!id) return showMessage('error', 'Brak cyklu do zapisu.');
+    //
+    //             const body: any = {
+    //                 id,
+    //                 name,
+    //                 yearFrom,
+    //                 yearTo,
+    //                 isActive: Boolean(cycleForm.active),
+    //                 meinVersionId: asNullIfZero(cycleForm.meinVersionId) ?? 0,
+    //                 monoVersionId: asNullIfZero(cycleForm.meinMonoVersionId) ?? 0,
+    //                 activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
+    //             };
+    //
+    //             const res = await authFetch(UPDATE_CYCLE_URL, {
+    //                 method: 'PATCH',
+    //                 headers: { 'Content-Type': 'application/json' },
+    //                 body: JSON.stringify(body),
+    //             } as RequestInit);
+    //
+    //             const t = await res.text().catch(() => '');
+    //             if (!res.ok) throw new Error(t || `HTTP ${res.status}`);
+    //
+    //             showMessage('success', 'Cykl zapisany.');
+    //         }
+    //
+    //         setCycleModalOpen(false);
+    //         fetchCycles(pageMeta.page, pageMeta.size);
+    //     } catch (e: any) {
+    //         showMessage('error', normalizeErr(e));
+    //     }
+    // }
+
     async function saveCycle() {
         const name = String(cycleForm.name ?? '').trim();
         const yearFrom = Number(cycleForm.yearFrom ?? 0);
         const yearTo = Number(cycleForm.yearTo ?? 0);
+        const active = Boolean(cycleForm.active);
 
-        if (!name) return showMessage('error', 'Podaj nazwę.');
-        if (!yearFrom || !yearTo) return showMessage('error', 'Podaj rok „od” i „do”.');
+        // wymagamy activeYear zawsze
+        const activeYearRaw = cycleForm.activeYear;
+        const activeYear = activeYearRaw == null ? null : Number(activeYearRaw);
+
+        // ===== WALIDACJA (CREATE + UPDATE) =====
+        if (!name) return showMessage('error', 'Podaj nazwę cyklu.');
+        if (!Number.isFinite(yearFrom) || yearFrom <= 0) return showMessage('error', 'Podaj poprawny rok „od” (yearFrom).');
+        if (!Number.isFinite(yearTo) || yearTo <= 0) return showMessage('error', 'Podaj poprawny rok „do” (yearTo).');
+        if (yearFrom > yearTo) return showMessage('error', 'Rok „od” nie może być większy niż rok „do”.');
+
+        // wymagamy aktywności (wg Twojego wymagania)
+
+
+        // activeYear wymagane
+        if (activeYear == null || !Number.isFinite(activeYear) || activeYear <= 0) {
+            return showMessage('error', 'Podaj rok aktywny.');
+        }
+
+        // activeYear w zakresie
+        if (activeYear < yearFrom || activeYear > yearTo) {
+            return showMessage('error', `Rok aktywny musi być w zakresie ${yearFrom}–${yearTo}.`);
+        }
 
         try {
             if (!cycleModalIsEdit) {
@@ -705,8 +788,8 @@ export default function AdminCatalogPage() {
                     name,
                     yearFrom,
                     yearTo,
-                    isActive: Boolean(cycleForm.active),
-                    activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
+                    isActive: true,          // wymuszone
+                    activeYear: activeYear,  // wymagane
                 };
 
                 const res = await authFetch(CREATE_CYCLE_URL, {
@@ -728,10 +811,10 @@ export default function AdminCatalogPage() {
                     name,
                     yearFrom,
                     yearTo,
-                    isActive: Boolean(cycleForm.active),
+                    isActive: true, // wymuszone
                     meinVersionId: asNullIfZero(cycleForm.meinVersionId) ?? 0,
                     monoVersionId: asNullIfZero(cycleForm.meinMonoVersionId) ?? 0,
-                    activeYear: asNullIfZero(cycleForm.activeYear) ?? 0,
+                    activeYear: activeYear, // wymagane
                 };
 
                 const res = await authFetch(UPDATE_CYCLE_URL, {
@@ -1152,7 +1235,7 @@ export default function AdminCatalogPage() {
                     </label>
 
                     <label style={{ display: 'grid', gap: 6 }}>
-                        <span className={styles.muted}>Rok aktywny (activeYear) — opcjonalnie</span>
+                        <span className={styles.muted}>Rok aktywny</span>
                         <input
                             className={styles.searchInput}
                             type="number"
@@ -1168,7 +1251,7 @@ export default function AdminCatalogPage() {
                     {cycleModalIsEdit && (
                         <>
                             <div style={{ display: 'grid', gap: 6 }}>
-                                <span className={styles.muted}>MEiN — wersja artykułów/czasopism (meinVersionId)</span>
+                                <span className={styles.muted}>MEiN — wersja artykułów/czasopism</span>
                                 <select
                                     className={styles.searchInput}
                                     value={asNullIfZero(cycleForm.meinVersionId) ?? ''}
@@ -1185,7 +1268,7 @@ export default function AdminCatalogPage() {
                             </div>
 
                             <div style={{ display: 'grid', gap: 6 }}>
-                                <span className={styles.muted}>MEiN — wersja monografii (monoVersionId)</span>
+                                <span className={styles.muted}>MEiN — wersja monografii </span>
                                 <select
                                     className={styles.searchInput}
                                     value={asNullIfZero(cycleForm.meinMonoVersionId) ?? ''}

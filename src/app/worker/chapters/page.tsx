@@ -1,8 +1,7 @@
-
 // src/app/worker/chapters/page.tsx
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styles from '@/app/admin/profiles/styles.module.css';
 import { useAuth } from '@/context/AuthContext';
 import { authFetch } from '@/lib/authFetch';
@@ -18,73 +17,13 @@ const DELETE_CHAPTER_URL = '/api/monograph/worker/deleteChapter'; // DELETE ?id=
 
 // ===== SLOTS =====
 const SLOTS_ADD_URL = '/api/slots/addToSlot';
+type SlotItemType = 'SLOT_ITEM_ARTICLE' | 'SLOT_ITEM_CHAPTER' | 'SLOT_ITEM_MONOGRAPH';
+type SlotsRequest = { disciplineId: number; itemType: SlotItemType; itemId: number };
 
 // ===== ADMIN (SŁOWNIKI) =====
 const LIST_TYPES_URL = '/api/article/admin/listTypes';
 const LIST_DISCIPLINES_URL = '/api/article/admin/listDisciplines';
 const LIST_CYCLES_URL = '/api/article/admin/listEvalCycles';
-
-type FieldErr = { field?: string; message?: string; defaultMessage?: string; code?: string };
-
-function mapApiError(status: number, rawText: string): string {
-    const txt = String(rawText ?? '').trim();
-
-    let j: any = null;
-    try {
-        j = txt ? JSON.parse(txt) : null;
-    } catch {
-        j = null;
-    }
-
-    const errorsArr: FieldErr[] =
-        (Array.isArray(j?.errors) && j.errors) ||
-        (Array.isArray(j?.fieldErrors) && j.fieldErrors) ||
-        (Array.isArray(j?.violations) && j.violations) ||
-        [];
-
-    const message =
-        (typeof j?.message === 'string' && j.message) ||
-        (typeof j?.error === 'string' && j.error) ||
-        (typeof j?.detail === 'string' && j.detail) ||
-        '';
-
-    const statusHint =
-        status === 400
-            ? 'Błędne dane wejściowe.'
-            : status === 401
-                ? 'Brak autoryzacji (zaloguj się ponownie).'
-                : status === 403
-                    ? 'Brak uprawnień do tej operacji.'
-                    : status === 404
-                        ? 'Nie znaleziono zasobu (sprawdź ID).'
-                        : status >= 500
-                            ? 'Błąd serwera (API).'
-                            : '';
-
-    if (errorsArr.length > 0) {
-        const lines = errorsArr
-            .map((e) => {
-                const f = String(e.field ?? '').trim();
-                const m = String(e.message ?? e.defaultMessage ?? '').trim();
-                if (f && m) return `• ${f}: ${m}`;
-                if (m) return `• ${m}`;
-                return '';
-            })
-            .filter(Boolean);
-
-        const top = message || statusHint || `HTTP ${status}`;
-        return [top, ...lines].join('\n');
-    }
-
-    if (message) return statusHint ? `${statusHint}\n${message}` : message;
-    if (txt) return statusHint ? `${statusHint}\n${txt}` : txt;
-    return statusHint || `HTTP ${status}`;
-}
-
-async function readApiError(res: Response): Promise<string> {
-    const text = await res.text().catch(() => '');
-    return mapApiError(res.status, text || '');
-}
 
 // ===================== TYPY / HELPERS =====================
 type PageMeta = { page: number; size: number; totalPages?: number; totalItems?: number };
@@ -120,8 +59,8 @@ type ChapterListItem = {
     points?: number | null;
 };
 
-type SlotItemType = 'SLOT_ITEM_ARTICLE' | 'SLOT_ITEM_CHAPTER' | 'SLOT_ITEM_MONOGRAPH';
-type SlotsRequest = { disciplineId: number; itemType: SlotItemType; itemId: number };
+type UiMessagePayload = { type: 'error' | 'success' | 'info'; text: string };
+type UiMessage = UiMessagePayload | null;
 
 function safeJson(text: string) {
     try {
@@ -129,6 +68,125 @@ function safeJson(text: string) {
     } catch {
         return null;
     }
+}
+
+function stripIds(s: string): string {
+    return String(s || '')
+        .replace(/\b(ID|Id|id)\s*[=:]\s*\d+\b/g, '')
+        .replace(/:\s*\d+\b/g, ':')
+        .replace(/#\d+\b/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function isbnDigits(s: any): string {
+    return String(s ?? '').replace(/\D/g, '');
+}
+
+function translateBackendMessage(raw: string): string {
+    const text = String(raw ?? '').trim();
+    if (!text) return 'Wystąpił błąd.';
+
+    const j = safeJson(text);
+    const msg =
+        (typeof j?.message === 'string' && j.message) ||
+        (typeof j?.error === 'string' && j.error) ||
+        (typeof j?.detail === 'string' && j.detail) ||
+        (typeof j?.description === 'string' && j.description) ||
+        text;
+
+    const m = stripIds(String(msg).trim());
+    if (!m) return 'Wystąpił błąd.';
+
+    // ===== ISBN strict normalize (IllegalArgumentException) =====
+    if (/Expected\s+13-digit\s+ISBN/i.test(m)) return 'Nieprawidłowy ISBN — podaj 13-cyfrowy ISBN (ISBN-13).';
+
+    // ===== SlotService (limity / cykl aktywny / argumenty) =====
+    if (m === 'No active eval cycle / activeYear.') return 'Brak aktywnego cyklu/roku ewaluacji.';
+    if (m === 'userId/disciplineId/itemId must be positive.') return 'Nieprawidłowe dane żądania (identyfikatory muszą być dodatnie).';
+    if (/^Slot limit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla tej dyscypliny.';
+    if (/^Mono sublimit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla monografii (mono) w tej dyscyplinie.';
+    if (/^Only publications from activeYear=\d+\s+can be added\.$/i.test(m)) return 'Do slotów można dodać tylko publikacje z aktywnego roku.';
+
+    // ===== WorkerMonoService / chapters =====
+    if (m === 'You already added this monograph') return 'Ta pozycja jest już dodana.';
+    if (m === 'At least one author (including owner) must be provided') return 'Musisz podać co najmniej jednego autora (w tym siebie).';
+    if (m === 'Chapter title must be provided') return 'Tytuł rozdziału jest wymagany.';
+    if (m === 'Title of monograph must be provided') return 'Tytuł monografii jest wymagany.';
+    if (m === 'Publisher of monograph must be provided') return 'Wydawca monografii jest wymagany.';
+    if (m.startsWith('Worker is not assigned to discipline')) return 'Nie masz przypisanej tej dyscypliny.';
+    if (m === 'Type and Discipline must be provided') return 'Wybierz typ publikacji i dyscyplinę.';
+    if (m === 'Publication year is not valid') return 'Nieprawidłowy rok publikacji.';
+    if (m === 'You must include yourself in the coauthors list') return 'Musisz dodać siebie do listy współautorów.';
+    if (m === 'You must include yourself in coauthors when updating') return 'Przy edycji musisz mieć siebie na liście współautorów.';
+
+    if (m === 'Chapter not found') return 'Nie znaleziono rozdziału.';
+    if (m === 'Publication type not found') return 'Nie znaleziono wybranego typu publikacji.';
+    if (m === 'Discipline not found') return 'Nie znaleziono wybranej dyscypliny.';
+    if (m === 'Type id not found') return 'Nie znaleziono wybranego typu publikacji.';
+
+    // literówka z backendu
+    if (m === 'Title be provided') return 'Tytuł jest wymagany.';
+
+    if (m === 'This is not yours chapter, you cannot see it, ha-ha-ha') return 'Nie masz dostępu do tego rozdziału.';
+    if (m === 'This is not yours chapter, you cannot delete it, ha-ha-ha') return 'Nie możesz usunąć tego rozdziału.';
+    if (m === 'Internal Server Error') return 'Wystąpił błąd serwera.';
+    if (m === 'Deleted') return 'Usunięto.';
+
+    return m;
+}
+
+function mapApiError(status: number, rawText: string): string {
+    const txt = String(rawText ?? '').trim();
+    const j = safeJson(txt);
+
+    const primary =
+        (typeof j?.message === 'string' && j.message) ||
+        (typeof j?.error === 'string' && j.error) ||
+        (typeof j?.detail === 'string' && j.detail) ||
+        '';
+
+    const errorsArr: any[] =
+        (Array.isArray(j?.errors) && j.errors) ||
+        (Array.isArray(j?.fieldErrors) && j.fieldErrors) ||
+        (Array.isArray(j?.violations) && j.violations) ||
+        [];
+
+    const statusHint =
+        status === 400
+            ? 'Błędne dane wejściowe.'
+            : status === 401
+                ? 'Brak autoryzacji (zaloguj się ponownie).'
+                : status === 403
+                    ? 'Brak uprawnień do tej operacji.'
+                    : status === 404
+                        ? 'Nie znaleziono zasobu.'
+                        : status >= 500
+                            ? 'Błąd serwera.'
+                            : '';
+
+    const top = translateBackendMessage(primary || txt || statusHint || `HTTP ${status}`);
+
+    if (errorsArr.length > 0) {
+        const lines = errorsArr
+            .map((e) => {
+                const f = String(e.field ?? '').trim();
+                const m = translateBackendMessage(String(e.message ?? e.defaultMessage ?? '').trim());
+                if (f && m) return `• ${f}: ${m}`;
+                if (m) return `• ${m}`;
+                return '';
+            })
+            .filter(Boolean);
+
+        return [top, ...lines].join('\n');
+    }
+
+    return top || statusHint || `HTTP ${status}`;
+}
+
+async function readApiError(res: Response): Promise<string> {
+    const text = await res.text().catch(() => '');
+    return mapApiError(res.status, text || '');
 }
 
 function toIntOr0(v: any): number {
@@ -182,6 +240,83 @@ function coauthorLabel(c: Coauthor): string {
     return name;
 }
 
+function validateRequiredChapterFields(input: {
+    typeId: any;
+    disciplineId: any;
+    monograficChapterTitle: any;
+    monograficTitle: any;
+    monographPublisher: any;
+    publicationYear: any;
+    isbn: any;
+    coauthor: any;
+}): { ok: true } | { ok: false; message: string } {
+    const typeId = Number(input.typeId) || 0;
+    const disciplineId = Number(input.disciplineId) || 0;
+
+    const chapterTitle = String(input.monograficChapterTitle ?? '').trim();
+    const monoTitle = String(input.monograficTitle ?? '').trim();
+    const publisher = String(input.monographPublisher ?? '').trim();
+
+    const yearRaw = String(input.publicationYear ?? '').trim();
+    const year = yearRaw ? toIntOrNull(yearRaw) : null;
+
+    const isbnRaw = String(input.isbn ?? '').trim();
+    const isbn13 = isbnDigits(isbnRaw);
+
+    const coArr = Array.isArray(input.coauthor) ? input.coauthor : [];
+    const coFiltered = coArr
+        .map((c: any) => ({
+            userId: Number(c?.userId ?? 0) || 0,
+            fullName: String(c?.fullName ?? '').trim(),
+            unitName: c?.unitName ?? null,
+        }))
+        .filter((c: any) => c.fullName.length > 0);
+
+    const missing: string[] = [];
+    if (typeId <= 0) missing.push('Typ publikacji');
+    if (disciplineId <= 0) missing.push('Dyscyplina');
+    if (!chapterTitle) missing.push('Tytuł rozdziału');
+    if (!monoTitle) missing.push('Tytuł monografii');
+    if (!publisher) missing.push('Wydawca monografii');
+    if (!isbnRaw) missing.push('ISBN (ISBN-13)');
+    if (!year) missing.push('Rok publikacji');
+    if (coFiltered.length === 0) missing.push('Współautorzy');
+
+    if (missing.length > 0) {
+        return { ok: false, message: `Uzupełnij wymagane pola:\n• ${missing.join('\n• ')}` };
+    }
+
+    if (isbn13.length !== 13) {
+        return { ok: false, message: 'Nieprawidłowy ISBN — podaj 13-cyfrowy ISBN (ISBN-13). (Możesz wpisać z myślnikami, ale musi mieć 13 cyfr).' };
+    }
+
+    return { ok: true };
+}
+
+// ===================== UI: INLINE NOTICE =====================
+function InlineNotice({ msg }: { msg: UiMessage }) {
+    if (!msg) return null;
+
+    const base: React.CSSProperties = {
+        fontSize: 12,
+        fontWeight: 800,
+        padding: '10px 12px',
+        borderRadius: 12,
+        border: '1px solid var(--border)',
+        whiteSpace: 'pre-wrap',
+        marginBottom: 10,
+    };
+
+    const style: React.CSSProperties =
+        msg.type === 'error'
+            ? { ...base, background: '#fff1f2', borderColor: '#fecdd3', color: '#9f1239' }
+            : msg.type === 'success'
+                ? { ...base, background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46' }
+                : { ...base, background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e3a8a' };
+
+    return <div style={style}>{msg.text}</div>;
+}
+
 // ===================== UI: MODAL (scroll body) =====================
 function Modal(props: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
     if (!props.open) return null;
@@ -195,7 +330,9 @@ function Modal(props: { open: boolean; title: string; onClose: () => void; child
                     </button>
                 </div>
 
-                <div className={styles.modalBody}>{props.children}</div>
+                <div className={(styles as any).modalBody} style={{ maxHeight: '75vh', overflowY: 'auto', paddingRight: 2 }}>
+                    {props.children}
+                </div>
             </div>
         </div>
     );
@@ -210,6 +347,36 @@ export default function WorkerChaptersPage() {
     const [loading, setLoading] = useState(false);
     const [err, setErr] = useState<string | null>(null);
     const [pageMeta, setPageMeta] = useState<PageMeta>({ page: 0, size: 20 });
+
+    // TOAST / MESSAGE
+    const [uiMsg, setUiMsg] = useState<UiMessage>(null);
+    const uiMsgT = useRef<number | null>(null);
+    function showMessage(type: UiMessagePayload['type'], text: string) {
+        setUiMsg({ type, text });
+        if (uiMsgT.current) window.clearTimeout(uiMsgT.current);
+        uiMsgT.current = window.setTimeout(() => setUiMsg(null), 4500);
+    }
+
+    // CONFIRM MODAL
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [confirmTitle, setConfirmTitle] = useState('Potwierdź');
+    const [confirmBody, setConfirmBody] = useState<string | null>(null);
+    const confirmActionRef = useRef<null | (() => Promise<void> | void)>(null);
+
+    function openConfirm(opts: { title: string; body?: string; onConfirm: () => Promise<void> | void }) {
+        setConfirmTitle(opts.title);
+        setConfirmBody(opts.body ?? null);
+        confirmActionRef.current = opts.onConfirm;
+        setConfirmOpen(true);
+    }
+
+    async function runConfirmAction() {
+        const fn = confirmActionRef.current;
+        setConfirmOpen(false);
+        confirmActionRef.current = null;
+        if (!fn) return;
+        await fn();
+    }
 
     // TITLE SEARCH
     const [titleInput, setTitleInput] = useState('');
@@ -234,20 +401,21 @@ export default function WorkerChaptersPage() {
         doi: '',
         isbn: '',
         publicationYear: '',
-        coauthor: [] as CoauthorInput[], // API: "coauthor"
+        coauthor: [] as CoauthorInput[],
     });
     const [creating, setCreating] = useState(false);
 
-    // MODAL
+    // DETAILS MODAL
     const [modalOpen, setModalOpen] = useState(false);
     const [modalLoading, setModalLoading] = useState(false);
     const [modalError, setModalError] = useState<string | null>(null);
     const [draft, setDraft] = useState<any | null>(null);
+    const [savingDraft, setSavingDraft] = useState(false);
 
     // SLOTS
     const [slotBusyId, setSlotBusyId] = useState<number | null>(null);
 
-    // SearchSelect options (tak jak w articles)
+    // SearchSelect options
     const typeOptionsSS: SearchSelectOption[] = useMemo(
         () => [{ id: 0, label: '— typ publikacji —' }, ...types.map((t) => ({ id: t.id, label: t.name }))],
         [types]
@@ -274,6 +442,7 @@ export default function WorkerChaptersPage() {
         setFiltersLoading(true);
         try {
             const headers = { 'Content-Type': 'application/json' };
+
             const [tRes, dRes, cRes] = await Promise.all([
                 authFetch(LIST_TYPES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
                 authFetch(LIST_DISCIPLINES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
@@ -294,9 +463,9 @@ export default function WorkerChaptersPage() {
         setLoading(true);
         setErr(null);
 
-        try {
-            const effectiveTitle = (titleOverride ?? titleQuery).trim();
+        const effectiveTitle = String(titleOverride ?? titleQuery ?? '').trim();
 
+        try {
             const body = {
                 typeId: filters.typeId > 0 ? filters.typeId : null,
                 disciplineId: filters.disciplineId > 0 ? filters.disciplineId : null,
@@ -315,7 +484,7 @@ export default function WorkerChaptersPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setItems([]);
-                setErr(text || `HTTP ${res.status}`);
+                setErr(mapApiError(res.status, text));
                 return;
             }
 
@@ -325,12 +494,11 @@ export default function WorkerChaptersPage() {
             setPageMeta(data?.pageMeta ?? { page, size });
         } catch (e: any) {
             setItems([]);
-            setErr(String(e?.message ?? e));
+            setErr(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setLoading(false);
         }
     }
-
 
     async function openDetails(id: number) {
         setModalOpen(true);
@@ -341,7 +509,10 @@ export default function WorkerChaptersPage() {
         try {
             const res = await authFetch(`${GET_CHAPTER_URL}?id=${encodeURIComponent(String(id))}`, { method: 'GET' });
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) {
+                setModalError(mapApiError(res.status, text));
+                return;
+            }
 
             const data = safeJson(text) ?? null;
             const co = normalizeCoauthors(data);
@@ -360,7 +531,7 @@ export default function WorkerChaptersPage() {
                 })),
             });
         } catch (e: any) {
-            setModalError(String(e?.message ?? e));
+            setModalError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setModalLoading(false);
         }
@@ -368,43 +539,66 @@ export default function WorkerChaptersPage() {
 
     async function addChapterToSlots(itemId: number, disciplineId: number) {
         if (!Number.isFinite(itemId) || itemId <= 0) return;
+
         if (!Number.isFinite(disciplineId) || disciplineId <= 0) {
-            alert('Brak dyscypliny dla tej pozycji (disciplineId).');
+            showMessage('error', 'Brak dyscypliny dla tej pozycji — nie mogę dodać do slotów.');
             return;
         }
 
-        setSlotBusyId(itemId);
-        try {
-            const body: SlotsRequest = {
-                disciplineId,
-                itemType: 'SLOT_ITEM_CHAPTER',
-                itemId,
-            };
+        openConfirm({
+            title: 'Dodać rozdział do slotów?',
+            body: 'Pozycja zostanie zsynchronizowana ze slotami dla jej dyscypliny.',
+            onConfirm: async () => {
+                setSlotBusyId(itemId);
+                try {
+                    const body: SlotsRequest = { disciplineId, itemType: 'SLOT_ITEM_CHAPTER', itemId };
 
-            const res = await authFetch(SLOTS_ADD_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            } as RequestInit);
+                    const res = await authFetch(SLOTS_ADD_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    } as RequestInit);
 
-            if (!res.ok) {
-                const msg = await readApiError(res);
-                alert('Błąd dodawania do slotów:\n' + msg);
-                return;
-            }
+                    if (!res.ok) {
+                        const msg = await readApiError(res);
+                        showMessage('error', `Błąd dodawania do slotów:\n${msg}`);
+                        return;
+                    }
 
-            alert('Dodano do slotów.');
-        } catch (e: any) {
-            alert('Błąd dodawania do slotów:\n' + String(e?.message ?? e));
-        } finally {
-            setSlotBusyId(null);
-        }
+                    showMessage('success', 'Dodano do slotów.');
+                } catch (e: any) {
+                    showMessage('error', `Błąd dodawania do slotów:\n${translateBackendMessage(String(e?.message ?? e))}`);
+                } finally {
+                    setSlotBusyId(null);
+                }
+            },
+        });
     }
 
     async function createChapter(e?: React.FormEvent) {
         e?.preventDefault();
+        if (creating) return;
+
+        const v = validateRequiredChapterFields({
+            typeId: createForm.typeId,
+            disciplineId: createForm.disciplineId,
+            monograficChapterTitle: createForm.monograficChapterTitle,
+            monograficTitle: createForm.monograficTitle,
+            monographPublisher: createForm.monographPublisher,
+            publicationYear: createForm.publicationYear,
+            isbn: createForm.isbn,
+            coauthor: createForm.coauthor,
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
         setCreating(true);
         try {
+            const isbnTrim = String(createForm.isbn ?? '').trim();
+
             const body = {
                 typeId: createForm.typeId > 0 ? createForm.typeId : null,
                 disciplineId: createForm.disciplineId > 0 ? createForm.disciplineId : null,
@@ -413,12 +607,17 @@ export default function WorkerChaptersPage() {
                 monograficTitle: createForm.monograficTitle?.trim() || null,
                 monographPublisher: createForm.monographPublisher?.trim() || null,
 
-                doi: String(createForm.doi ?? '').trim(),
-                isbn: String(createForm.isbn ?? '').trim(),
+                doi: String(createForm.doi ?? '').trim() || null,
+                // KLUCZOWE: nie wysyłaj pustego stringa (bo backend robi strict normalize)
+                isbn: isbnTrim || null,
                 publicationYear: createForm.publicationYear ? toIntOrNull(createForm.publicationYear) : null,
 
                 coauthor: (Array.isArray(createForm.coauthor) ? createForm.coauthor : [])
-                    .map((c: any) => ({ userId: Number(c?.userId ?? 0) || 0, fullName: String(c?.fullName ?? '').trim() }))
+                    .map((c: any) => ({
+                        userId: Number(c?.userId ?? 0) || 0,
+                        fullName: String(c?.fullName ?? '').trim(),
+                        unitName: c?.unitName ?? null,
+                    }))
                     .filter((c) => c.fullName.length > 0),
             };
 
@@ -430,9 +629,11 @@ export default function WorkerChaptersPage() {
 
             if (!res.ok) {
                 const msg = await readApiError(res);
-                throw new Error(msg);
+                showMessage('error', `Błąd dodawania rozdziału:\n${msg}`);
+                return;
             }
 
+            showMessage('success', 'Rozdział dodany.');
             await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20);
 
             setCreateForm({
@@ -447,7 +648,7 @@ export default function WorkerChaptersPage() {
                 coauthor: [],
             });
         } catch (e: any) {
-            alert('Błąd createChapter:\n' + String(e?.message ?? e));
+            showMessage('error', `Błąd dodawania rozdziału:\n${translateBackendMessage(String(e?.message ?? e))}`);
         } finally {
             setCreating(false);
         }
@@ -455,25 +656,46 @@ export default function WorkerChaptersPage() {
 
     async function updateChapter() {
         if (!draft?.id) return;
+        if (savingDraft) return;
 
         const id = Number(draft.id);
         if (!Number.isFinite(id) || id <= 0) {
-            alert('Nieprawidłowe id.');
+            showMessage('error', 'Nieprawidłowe id rozdziału.');
             return;
         }
 
+        const v = validateRequiredChapterFields({
+            typeId: draft.typeId,
+            disciplineId: draft.disciplineId,
+            monograficChapterTitle: draft.monograficChapterTitle,
+            monograficTitle: draft.monograficTitle,
+            monographPublisher: draft.monographPublisher,
+            publicationYear: draft.publicationYear,
+            isbn: draft.isbn,
+            coauthor: draft.coauthor,
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
+        setSavingDraft(true);
         try {
+            const isbnTrim = String(draft.isbn ?? '').trim();
+
             const body = {
                 id,
                 typeId: draft.typeId ? Number(draft.typeId) : null,
                 disciplineId: draft.disciplineId ? Number(draft.disciplineId) : null,
 
-                monograficChapterTitle: draft.monograficChapterTitle ?? null,
-                monograficTitle: draft.monograficTitle ?? null,
-                monographPublisher: draft.monographPublisher ?? null,
+                monograficChapterTitle: String(draft.monograficChapterTitle ?? '').trim() || null,
+                monograficTitle: String(draft.monograficTitle ?? '').trim() || null,
+                monographPublisher: String(draft.monographPublisher ?? '').trim() || null,
 
-                doi: (draft.doi ?? '').toString(),
-                isbn: (draft.isbn ?? '').toString(),
+                doi: String(draft.doi ?? '').trim() || null,
+                // KLUCZOWE: nie wysyłaj pustego stringa
+                isbn: isbnTrim || null,
                 publicationYear: draft.publicationYear != null && String(draft.publicationYear).trim() !== '' ? Number(draft.publicationYear) : null,
 
                 coauthor: Array.isArray(draft.coauthor)
@@ -481,6 +703,7 @@ export default function WorkerChaptersPage() {
                         .map((c: any) => ({
                             userId: Number(c?.userId ?? 0) || 0,
                             fullName: String(c?.fullName ?? '').trim(),
+                            unitName: c?.unitName ?? null,
                         }))
                         .filter((c: any) => c.fullName.length > 0)
                     : [],
@@ -494,7 +717,7 @@ export default function WorkerChaptersPage() {
 
             if (!res.ok) {
                 const msg = await readApiError(res);
-                alert('Błąd updateChapter:\n' + msg);
+                showMessage('error', `Błąd zapisu:\n${msg}`);
                 return;
             }
 
@@ -506,39 +729,57 @@ export default function WorkerChaptersPage() {
                 ...data,
                 typeId: toIntOr0(data?.typeId ?? data?.type?.id ?? 0),
                 disciplineId: toIntOr0(data?.disciplineId ?? data?.discipline?.id ?? 0),
-                coauthor: co.map((c) => ({ userId: Number(c.userId) || 0, fullName: String(c.fullName ?? '').trim(), unitName: c.unitName ?? null })),
+                coauthor: co.map((c) => ({
+                    userId: Number(c.userId) || 0,
+                    fullName: String(c.fullName ?? '').trim(),
+                    unitName: c.unitName ?? null,
+                })),
             });
 
             await fetchList(pageMeta.page, pageMeta.size);
-            alert('Zapisano.');
+            showMessage('success', 'Zapisano.');
         } catch (e: any) {
-            alert('Błąd updateChapter:\n' + String(e?.message ?? e));
+            showMessage('error', `Błąd zapisu:\n${translateBackendMessage(String(e?.message ?? e))}`);
+        } finally {
+            setSavingDraft(false);
         }
     }
 
     async function deleteChapter(id: number) {
-        if (!confirm(`Usunąć rozdział ID=${id}?`)) return;
+        openConfirm({
+            title: 'Usunąć rozdział?',
+            body: 'Ta operacja jest nieodwracalna.',
+            onConfirm: async () => {
+                try {
+                    const res = await authFetch(`${DELETE_CHAPTER_URL}?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' });
 
-        try {
-            const res = await authFetch(`${DELETE_CHAPTER_URL}?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' });
-            const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+                    if (!res.ok) {
+                        const msg = await readApiError(res);
+                        showMessage('error', `Błąd usuwania:\n${msg}`);
+                        return;
+                    }
 
-            await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20);
-            setModalOpen(false);
-            setDraft(null);
-        } catch (e: any) {
-            alert('Błąd deleteChapter: ' + String(e?.message ?? e));
-        }
+                    showMessage('success', 'Usunięto.');
+                    await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20);
+
+                    setModalOpen(false);
+                    setDraft(null);
+                    setModalError(null);
+                } catch (e: any) {
+                    showMessage('error', `Błąd usuwania:\n${translateBackendMessage(String(e?.message ?? e))}`);
+                }
+            },
+        });
     }
 
     function prevPage() {
         const p = Math.max(0, (pageMeta.page ?? 0) - 1);
-        void fetchList(p, pageMeta.size ?? 20);
+        void fetchList(p, pageMeta.size ?? 20, titleQuery);
     }
+
     function nextPage() {
         const p = (pageMeta.page ?? 0) + 1;
-        void fetchList(p, pageMeta.size ?? 20);
+        void fetchList(p, pageMeta.size ?? 20, titleQuery);
     }
 
     if (!initialized) return <div className={styles.page}>Ładowanie…</div>;
@@ -547,10 +788,12 @@ export default function WorkerChaptersPage() {
         <div className={styles.page}>
             <header className={styles.headerRow}>
                 <h1 className={styles.title}>Rozdziały — moje publikacje</h1>
-                <button className={styles.ghostBtn} onClick={() => fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20)} disabled={loading}>
+                <button className={styles.ghostBtn} onClick={() => fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20, titleQuery)} disabled={loading}>
                     Odśwież
                 </button>
             </header>
+
+            <InlineNotice msg={uiMsg} />
 
             {err ? (
                 <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
@@ -607,8 +850,8 @@ export default function WorkerChaptersPage() {
                                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                                                         {preview.map((c, idx) => (
                                                             <span key={`${id}-c-${idx}`} className={`${styles.badge} ${styles.badgeMuted}`} title={coauthorLabel(c)}>
-                                {coauthorLabel(c)}
-                              </span>
+                                                                {coauthorLabel(c)}
+                                                            </span>
                                                         ))}
                                                         {more > 0 && <span className={`${styles.badge} ${styles.badgeMuted}`}>+{more}</span>}
                                                     </div>
@@ -659,8 +902,9 @@ export default function WorkerChaptersPage() {
                     </div>
                 </div>
 
-                {/* RIGHT: FILTERS (SearchSelect) */}
-                <div className={styles.rightColumn}>
+                {/* RIGHT: FILTERS */}
+                {/* RIGHT: FILTERS */}
+                <div className={styles.rightColumn} style={{ overflow: 'visible' }}>
                     <div
                         className={styles.actionsCard}
                         style={{
@@ -668,35 +912,20 @@ export default function WorkerChaptersPage() {
                             top: 16,
                             alignSelf: 'flex-start',
                             overflow: 'visible',
-                            width: '100%',
-                            maxWidth: '100%',
+                            zIndex: 50,
                         }}
                     >
                         <h3>Szukaj</h3>
-                        <p>Filtry listy rozdziałów</p>
+                        <p>Filtry listy monografii</p>
 
-                        <div style={{display: 'grid', gap: 10}}>
-                            <input
-                                className={styles.searchInput}
-                                placeholder="Szukaj po tytule…"
-                                value={titleInput}
-                                onChange={(e) => setTitleInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                        const t = titleInput.trim();
-                                        setTitleQuery(t);
-                                        void fetchList(0, pageMeta.size ?? 20, t);
-                                    }
-                                }}
-                            />
-
+                        <div style={{ display: 'grid', gap: 10, overflow: 'visible' }}>
                             <SearchSelect
                                 label="Typ"
                                 value={filters.typeId}
                                 options={typeOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— typ publikacji —"
-                                onChange={(id) => setFilters((p) => ({...p, typeId: Number(id) || 0}))}
+                                onChange={(id) => setFilters((p) => ({ ...p, typeId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
@@ -705,7 +934,7 @@ export default function WorkerChaptersPage() {
                                 options={disciplineOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— dyscyplina —"
-                                onChange={(id) => setFilters((p) => ({...p, disciplineId: Number(id) || 0}))}
+                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
@@ -714,34 +943,35 @@ export default function WorkerChaptersPage() {
                                 options={cycleOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— cykl —"
-                                onChange={(id) => setFilters((p) => ({...p, cycleId: Number(id) || 0}))}
+                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: Number(id) || 0 }))}
                             />
 
-                            <div style={{display: 'flex', gap: 10}}>
+                            <div style={{ display: 'flex', gap: 10 }}>
                                 <button
                                     className={styles.primaryBtn}
                                     onClick={() => {
                                         const t = titleInput.trim();
                                         setTitleQuery(t);
-                                        void fetchList(0, pageMeta.size ?? 20, t); // <-- kluczowe
+                                        void fetchList(0, pageMeta.size ?? 20, t);
                                     }}
                                     disabled={loading}
+                                    style={{ flex: '1 1 auto' }}
                                 >
                                     Szukaj
                                 </button>
                                 <button
                                     className={styles.ghostBtn}
                                     onClick={() => {
-                                        setFilters({typeId: 0, disciplineId: 0, cycleId: 0});
+                                        setFilters({ typeId: 0, disciplineId: 0, cycleId: 0 });
                                         setTitleInput('');
                                         setTitleQuery('');
-                                        void fetchList(0, pageMeta.size ?? 20, ''); // <-- od razu bez title
+                                        setTimeout(() => void fetchList(0, pageMeta.size ?? 20, ''), 0);
                                     }}
                                     disabled={loading}
+                                    style={{ whiteSpace: 'nowrap' }}
                                 >
                                     Reset
                                 </button>
-
                             </div>
                         </div>
                     </div>
@@ -749,26 +979,18 @@ export default function WorkerChaptersPage() {
             </div>
 
             {/* CREATE (BOTTOM) */}
-            <div className={styles.bigCardFull} style={{marginTop: 16, overflow: 'visible'}}>
+            <div className={styles.bigCardFull} style={{ marginTop: 16, overflow: 'visible' }}>
                 <div className={styles.cardHeader}>
                     <div className={styles.bigAvatar}>+</div>
                     <div>
-                    <h3 className={styles.cardTitle}>Dodaj rozdział</h3>
+                        <h3 className={styles.cardTitle}>Dodaj rozdział</h3>
                         <div className={styles.muted}>createChapter</div>
                     </div>
                 </div>
 
                 <form onSubmit={createChapter} style={{ display: 'grid', gap: 10, marginTop: 12 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                        <SearchSelect
-                            label="Typ"
-                            value={createForm.typeId}
-                            options={typeOptionsSS}
-                            disabled={filtersLoading}
-                            placeholder="— typ publikacji —"
-                            onChange={(id) => setCreateForm((p) => ({ ...p, typeId: Number(id) || 0 }))}
-                        />
-
+                        <SearchSelect label="Typ" value={createForm.typeId} options={typeOptionsSS} disabled={filtersLoading} placeholder="— typ publikacji —" onChange={(id) => setCreateForm((p) => ({ ...p, typeId: Number(id) || 0 }))} />
                         <SearchSelect
                             label="Dyscyplina"
                             value={createForm.disciplineId}
@@ -779,37 +1001,17 @@ export default function WorkerChaptersPage() {
                         />
                     </div>
 
-                    <input
-                        className={styles.searchInput}
-                        placeholder="tytuł rozdziału"
-                        value={createForm.monograficChapterTitle}
-                        onChange={(e) => setCreateForm((p) => ({ ...p, monograficChapterTitle: e.target.value }))}
-                    />
+                    <input className={styles.searchInput} placeholder="tytuł rozdziału" value={createForm.monograficChapterTitle} onChange={(e) => setCreateForm((p) => ({ ...p, monograficChapterTitle: e.target.value }))} />
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                        <input
-                            className={styles.searchInput}
-                            placeholder="tytuł monografii"
-                            value={createForm.monograficTitle}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, monograficTitle: e.target.value }))}
-                        />
-                        <input
-                            className={styles.searchInput}
-                            placeholder="wydawca"
-                            value={createForm.monographPublisher}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, monographPublisher: e.target.value }))}
-                        />
+                        <input className={styles.searchInput} placeholder="tytuł monografii" value={createForm.monograficTitle} onChange={(e) => setCreateForm((p) => ({ ...p, monograficTitle: e.target.value }))} />
+                        <input className={styles.searchInput} placeholder="wydawca" value={createForm.monographPublisher} onChange={(e) => setCreateForm((p) => ({ ...p, monographPublisher: e.target.value }))} />
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
                         <input className={styles.searchInput} placeholder="doi" value={createForm.doi} onChange={(e) => setCreateForm((p) => ({ ...p, doi: e.target.value }))} />
-                        <input className={styles.searchInput} placeholder="isbn" value={createForm.isbn} onChange={(e) => setCreateForm((p) => ({ ...p, isbn: e.target.value }))} />
-                        <input
-                            className={styles.searchInput}
-                            placeholder="rok publikacji"
-                            value={createForm.publicationYear}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, publicationYear: e.target.value }))}
-                        />
+                        <input className={styles.searchInput} placeholder="isbn (ISBN-13)" value={createForm.isbn} onChange={(e) => setCreateForm((p) => ({ ...p, isbn: e.target.value }))} />
+                        <input className={styles.searchInput} placeholder="rok publikacji" value={createForm.publicationYear} onChange={(e) => setCreateForm((p) => ({ ...p, publicationYear: e.target.value }))} />
                     </div>
 
                     <CoauthorsPicker value={createForm.coauthor} onChange={(next) => setCreateForm((p) => ({ ...p, coauthor: next }))} label="Współautorzy" />
@@ -864,14 +1066,7 @@ export default function WorkerChaptersPage() {
                         <div className={styles.kvGrid} style={{ marginBottom: 12, overflow: 'visible' }}>
                             <div className={styles.kvKey}>Typ</div>
                             <div className={styles.kvVal} style={{ overflow: 'visible' }}>
-                                <SearchSelect
-                                    label=""
-                                    value={toIntOr0(draft.typeId)}
-                                    options={typeOptionsSS}
-                                    disabled={filtersLoading}
-                                    placeholder="— typ publikacji —"
-                                    onChange={(id) => setDraft((p: any) => ({ ...p, typeId: Number(id) || 0 }))}
-                                />
+                                <SearchSelect label="" value={toIntOr0(draft.typeId)} options={typeOptionsSS} disabled={filtersLoading} placeholder="— typ publikacji —" onChange={(id) => setDraft((p: any) => ({ ...p, typeId: Number(id) || 0 }))} />
                             </div>
 
                             <div className={styles.kvKey}>Dyscyplina</div>
@@ -903,11 +1098,7 @@ export default function WorkerChaptersPage() {
 
                             <div className={styles.kvKey}>Rok</div>
                             <div className={styles.kvVal}>
-                                <input
-                                    className={styles.searchInput}
-                                    value={String(draft.publicationYear ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, publicationYear: e.target.value ? Number(e.target.value) : null }))}
-                                />
+                                <input className={styles.searchInput} value={String(draft.publicationYear ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, publicationYear: e.target.value ? Number(e.target.value) : null }))} />
                             </div>
 
                             <div className={styles.kvKey}>DOI</div>
@@ -915,7 +1106,7 @@ export default function WorkerChaptersPage() {
                                 <input className={styles.searchInput} value={String(draft.doi ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, doi: e.target.value }))} />
                             </div>
 
-                            <div className={styles.kvKey}>ISBN</div>
+                            <div className={styles.kvKey}>ISBN (ISBN-13)</div>
                             <div className={styles.kvVal}>
                                 <input className={styles.searchInput} value={String(draft.isbn ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, isbn: e.target.value }))} />
                             </div>
@@ -930,15 +1121,15 @@ export default function WorkerChaptersPage() {
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                 {normalizeCoauthors({ coauthor: draft.coauthor }).map((c, idx) => (
                                     <span key={idx} className={`${styles.badge} ${styles.badgeMuted}`} title={coauthorLabel(c)}>
-                    {coauthorLabel(c)}
-                  </span>
+                                        {coauthorLabel(c)}
+                                    </span>
                                 ))}
                             </div>
                         </div>
 
                         <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
-                            <button className={styles.primaryBtn} onClick={updateChapter}>
-                                Zapisz
+                            <button className={styles.primaryBtn} onClick={updateChapter} disabled={savingDraft}>
+                                {savingDraft ? 'Zapisywanie…' : 'Zapisz'}
                             </button>
 
                             <button
@@ -956,6 +1147,25 @@ export default function WorkerChaptersPage() {
                         </div>
                     </>
                 )}
+            </Modal>
+
+            {/* CONFIRM MODAL */}
+            <Modal open={confirmOpen} title={confirmTitle} onClose={() => setConfirmOpen(false)}>
+                <div style={{ display: 'grid', gap: 12 }}>
+                    {confirmBody && (
+                        <div className={styles.muted} style={{ whiteSpace: 'pre-line' }}>
+                            {confirmBody}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                        <button className={styles.ghostBtn} onClick={() => setConfirmOpen(false)}>
+                            Anuluj
+                        </button>
+                        <button className={styles.dangerBtn} onClick={runConfirmAction}>
+                            Potwierdź
+                        </button>
+                    </div>
+                </div>
             </Modal>
         </div>
     );

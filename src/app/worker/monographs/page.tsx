@@ -1,7 +1,7 @@
 // src/app/worker/monographs/page.tsx
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import styles from '@/app/admin/profiles/styles.module.css';
 import { useAuth } from '@/context/AuthContext';
 import { authFetch } from '@/lib/authFetch';
@@ -17,76 +17,15 @@ const DELETE_MONOGRAPH_URL = '/api/monograph/worker/deleteMonograph'; // DELETE 
 
 // ===== SLOTS =====
 const ADD_TO_SLOT_URL = '/api/slots/addToSlot';
+type SlotItemType = 'SLOT_ITEM_ARTICLE' | 'SLOT_ITEM_CHAPTER' | 'SLOT_ITEM_MONOGRAPH';
+type SlotsRequest = { disciplineId: number; itemType: SlotItemType; itemId: number };
 
 // ===== ADMIN (SŁOWNIKI) =====
 const LIST_TYPES_URL = '/api/article/admin/listTypes';
 const LIST_CYCLES_URL = '/api/article/admin/listEvalCycles';
 
 // ===== PROFILES (MOJE DYSCYPLINY) =====
-// jeśli u Ciebie proxy ma inną nazwę (np. /api/profile/...), podmień tu:
-const LIST_MY_DISCIPLINES_URL = '/api/profiles/me/disciplines';
-
-type FieldErr = { field?: string; message?: string; defaultMessage?: string; code?: string };
-
-function mapApiError(status: number, rawText: string): string {
-    const txt = String(rawText ?? '').trim();
-
-    let j: any = null;
-    try {
-        j = txt ? JSON.parse(txt) : null;
-    } catch {
-        j = null;
-    }
-
-    const errorsArr: FieldErr[] =
-        (Array.isArray(j?.errors) && j.errors) ||
-        (Array.isArray(j?.fieldErrors) && j.fieldErrors) ||
-        (Array.isArray(j?.violations) && j.violations) ||
-        [];
-
-    const message =
-        (typeof j?.message === 'string' && j.message) ||
-        (typeof j?.error === 'string' && j.error) ||
-        (typeof j?.detail === 'string' && j.detail) ||
-        '';
-
-    const statusHint =
-        status === 400
-            ? 'Błędne dane wejściowe.'
-            : status === 401
-                ? 'Brak autoryzacji (zaloguj się ponownie).'
-                : status === 403
-                    ? 'Brak uprawnień do tej operacji.'
-                    : status === 404
-                        ? 'Nie znaleziono zasobu (sprawdź ID).'
-                        : status >= 500
-                            ? 'Błąd serwera (API).'
-                            : '';
-
-    if (errorsArr.length > 0) {
-        const lines = errorsArr
-            .map((e) => {
-                const f = String(e.field ?? '').trim();
-                const m = String(e.message ?? e.defaultMessage ?? '').trim();
-                if (f && m) return `• ${f}: ${m}`;
-                if (m) return `• ${m}`;
-                return '';
-            })
-            .filter(Boolean);
-
-        const top = message || statusHint || `HTTP ${status}`;
-        return [top, ...lines].join('\n');
-    }
-
-    if (message) return statusHint ? `${statusHint}\n${message}` : message;
-    if (txt) return statusHint ? `${statusHint}\n${txt}` : txt;
-    return statusHint || `HTTP ${status}`;
-}
-
-async function readApiError(res: Response): Promise<string> {
-    const text = await res.text().catch(() => '');
-    return mapApiError(res.status, text || '');
-}
+const LIST_MY_DISCIPLINES_URL= '/api/article/admin/listDisciplines';
 
 // ===================== TYPY / HELPERS =====================
 type PageMeta = { page: number; size: number; totalPages?: number; totalItems?: number };
@@ -106,7 +45,6 @@ type MonographListItem = {
     doi?: string | null;
     isbn?: string | null;
 
-    // backend bywa różny: czasem monograficTitle
     monograficTitle?: string | null;
 
     publicationYear?: number | null;
@@ -130,12 +68,130 @@ type ListWorkerDisciplineResponse = {
     item?: WorkerDisciplineResponse[];
 };
 
+type UiMessagePayload = { type: 'error' | 'success' | 'info'; text: string };
+type UiMessage = UiMessagePayload | null;
+
 function safeJson(text: string) {
     try {
         return text ? JSON.parse(text) : null;
     } catch {
         return null;
     }
+}
+
+function stripIds(s: string): string {
+    return String(s || '')
+        .replace(/\b(ID|Id|id)\s*[=:]\s*\d+\b/g, '')
+        .replace(/:\s*\d+\b/g, ':')
+        .replace(/#\d+\b/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function isbnDigits(s: any): string {
+    return String(s ?? '').replace(/\D/g, '');
+}
+
+function translateBackendMessage(raw: string): string {
+    const text = String(raw ?? '').trim();
+    if (!text) return 'Wystąpił błąd.';
+
+    const j = safeJson(text);
+    const msg =
+        (typeof j?.message === 'string' && j.message) ||
+        (typeof j?.error === 'string' && j.error) ||
+        (typeof j?.detail === 'string' && j.detail) ||
+        (typeof j?.description === 'string' && j.description) ||
+        text;
+
+    const m = stripIds(String(msg).trim());
+    if (!m) return 'Wystąpił błąd.';
+
+    // ===== ISBN strict normalize (IllegalArgumentException) =====
+    if (/Expected\s+13-digit\s+ISBN/i.test(m)) return 'Nieprawidłowy ISBN — podaj 13-cyfrowy ISBN (ISBN-13).';
+
+    // ===== SlotService =====
+    if (m === 'No active eval cycle / activeYear.') return 'Brak aktywnego cyklu/roku ewaluacji.';
+    if (m === 'userId/disciplineId/itemId must be positive.') return 'Nieprawidłowe dane żądania (identyfikatory muszą być dodatnie).';
+    if (/^Slot limit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla tej dyscypliny.';
+    if (/^Mono sublimit exceeded\./i.test(m)) return 'Przekroczono limit slotów dla monografii (mono) w tej dyscyplinie.';
+    if (/^Only publications from activeYear=\d+\s+can be added\.$/i.test(m)) return 'Do slotów można dodać tylko publikacje z aktywnego roku.';
+
+    // ===== WorkerMonoService / monographs =====
+    if (m === 'You already added this monograph') return 'Ta pozycja jest już dodana.';
+    if (m === 'At least one author (including owner) must be provided') return 'Musisz podać co najmniej jednego autora (w tym siebie).';
+    if (m === 'Title must be provided') return 'Tytuł jest wymagany.';
+    if (m === 'Type and Discipline must be provided') return 'Wybierz typ publikacji i dyscyplinę.';
+    if (m.startsWith('Worker is not assigned to discipline')) return 'Nie masz przypisanej tej dyscypliny.';
+    if (m === 'Publication year is not valid') return 'Nieprawidłowy rok publikacji.';
+    if (m === 'You must include yourself in the coauthors list') return 'Musisz dodać siebie do listy współautorów.';
+    if (m === 'You must include yourself in coauthors when updating') return 'Przy edycji musisz mieć siebie na liście współautorów.';
+
+    if (m === 'Publication not found') return 'Nie znaleziono monografii.';
+    if (m === 'Type id not found') return 'Nie znaleziono wybranego typu publikacji.';
+    if (m === 'Publication type not found') return 'Nie znaleziono wybranego typu publikacji.';
+    if (m === 'Discipline not found') return 'Nie znaleziono wybranej dyscypliny.';
+
+    if (m === 'This is not yours monograph, you cannot see it, ha-ha-ha') return 'Nie masz dostępu do tej monografii.';
+    if (m === 'This is not yours monograph, you cannot delete it, ha-ha-ha') return 'Nie możesz usunąć tej monografii.';
+
+    if (m === 'Internal Server Error') return 'Wystąpił błąd serwera.';
+    if (m === 'Deleted') return 'Usunięto.';
+
+    return m;
+}
+
+function mapApiError(status: number, rawText: string): string {
+    const txt = String(rawText ?? '').trim();
+    const j = safeJson(txt);
+
+    const primary =
+        (typeof j?.message === 'string' && j.message) ||
+        (typeof j?.error === 'string' && j.error) ||
+        (typeof j?.detail === 'string' && j.detail) ||
+        '';
+
+    const errorsArr: any[] =
+        (Array.isArray(j?.errors) && j.errors) ||
+        (Array.isArray(j?.fieldErrors) && j.fieldErrors) ||
+        (Array.isArray(j?.violations) && j.violations) ||
+        [];
+
+    const statusHint =
+        status === 400
+            ? 'Błędne dane wejściowe.'
+            : status === 401
+                ? 'Brak autoryzacji (zaloguj się ponownie).'
+                : status === 403
+                    ? 'Brak uprawnień do tej operacji.'
+                    : status === 404
+                        ? 'Nie znaleziono zasobu.'
+                        : status >= 500
+                            ? 'Błąd serwera.'
+                            : '';
+
+    const top = translateBackendMessage(primary || txt || statusHint || `HTTP ${status}`);
+
+    if (errorsArr.length > 0) {
+        const lines = errorsArr
+            .map((e) => {
+                const f = String(e.field ?? '').trim();
+                const m = translateBackendMessage(String(e.message ?? e.defaultMessage ?? '').trim());
+                if (f && m) return `• ${f}: ${m}`;
+                if (m) return `• ${m}`;
+                return '';
+            })
+            .filter(Boolean);
+
+        return [top, ...lines].join('\n');
+    }
+
+    return top || statusHint || `HTTP ${status}`;
+}
+
+async function readApiError(res: Response): Promise<string> {
+    const text = await res.text().catch(() => '');
+    return mapApiError(res.status, text || '');
 }
 
 function toIntOr0(v: any): number {
@@ -189,6 +245,80 @@ function coauthorLabel(c: Coauthor): string {
     return name;
 }
 
+function validateRequiredMonographFields(input: {
+    typeId: any;
+    disciplineId: any;
+    title: any;
+    monograficPublisherTitle: any;
+    publicationYear: any;
+    isbn: any;
+    coauthors: any;
+}): { ok: true } | { ok: false; message: string } {
+    const typeId = Number(input.typeId) || 0;
+    const disciplineId = Number(input.disciplineId) || 0;
+
+    const title = String(input.title ?? '').trim();
+    const publisher = String(input.monograficPublisherTitle ?? '').trim();
+
+    const yearRaw = String(input.publicationYear ?? '').trim();
+    const year = yearRaw ? toIntOrNull(yearRaw) : null;
+
+    const isbnRaw = String(input.isbn ?? '').trim();
+    const isbn13 = isbnDigits(isbnRaw);
+
+    const coArr = Array.isArray(input.coauthors) ? input.coauthors : [];
+    const coFiltered = coArr
+        .map((c: any) => ({
+            userId: Number(c?.userId ?? 0) || 0,
+            fullName: String(c?.fullName ?? '').trim(),
+            unitName: c?.unitName ?? null,
+        }))
+        .filter((c: any) => c.fullName.length > 0);
+
+    const missing: string[] = [];
+    if (typeId <= 0) missing.push('Typ publikacji');
+    if (disciplineId <= 0) missing.push('Dyscyplina ');
+    if (!title) missing.push('Tytuł');
+    if (!publisher) missing.push('Wydawca');
+    if (!isbnRaw) missing.push('ISBN (ISBN-13)');
+    if (!year) missing.push('Rok publikacji');
+    if (coFiltered.length === 0) missing.push('Współautorzy');
+
+    if (missing.length > 0) {
+        return { ok: false, message: `Uzupełnij wymagane pola:\n• ${missing.join('\n• ')}` };
+    }
+
+    if (isbn13.length !== 13) {
+        return { ok: false, message: 'Nieprawidłowy ISBN — podaj 13-cyfrowy ISBN (ISBN-13). (Możesz wpisać z myślnikami, ale musi mieć 13 cyfr).' };
+    }
+
+    return { ok: true };
+}
+
+// ===================== UI: INLINE NOTICE =====================
+function InlineNotice({ msg }: { msg: UiMessage }) {
+    if (!msg) return null;
+
+    const base: React.CSSProperties = {
+        fontSize: 12,
+        fontWeight: 800,
+        padding: '10px 12px',
+        borderRadius: 12,
+        border: '1px solid var(--border)',
+        whiteSpace: 'pre-wrap',
+        marginBottom: 10,
+    };
+
+    const style: React.CSSProperties =
+        msg.type === 'error'
+            ? { ...base, background: '#fff1f2', borderColor: '#fecdd3', color: '#9f1239' }
+            : msg.type === 'success'
+                ? { ...base, background: '#ecfdf5', borderColor: '#a7f3d0', color: '#065f46' }
+                : { ...base, background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e3a8a' };
+
+    return <div style={style}>{msg.text}</div>;
+}
+
 // ===================== UI: MODAL (SCROLLOWALNY) =====================
 function Modal(props: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
     if (!props.open) return null;
@@ -202,7 +332,9 @@ function Modal(props: { open: boolean; title: string; onClose: () => void; child
                     </button>
                 </div>
 
-                <div className={styles.modalBody}>{props.children}</div>
+                <div className={(styles as any).modalBody} style={{ maxHeight: '75vh', overflowY: 'auto', paddingRight: 2 }}>
+                    {props.children}
+                </div>
             </div>
         </div>
     );
@@ -218,6 +350,36 @@ export default function WorkerMonographsPage() {
     const [err, setErr] = useState<string | null>(null);
     const [pageMeta, setPageMeta] = useState<PageMeta>({ page: 0, size: 20 });
 
+    // TOAST / MESSAGE
+    const [uiMsg, setUiMsg] = useState<UiMessage>(null);
+    const uiMsgT = useRef<number | null>(null);
+    function showMessage(type: UiMessagePayload['type'], text: string) {
+        setUiMsg({ type, text });
+        if (uiMsgT.current) window.clearTimeout(uiMsgT.current);
+        uiMsgT.current = window.setTimeout(() => setUiMsg(null), 4500);
+    }
+
+    // CONFIRM MODAL
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [confirmTitle, setConfirmTitle] = useState('Potwierdź');
+    const [confirmBody, setConfirmBody] = useState<string | null>(null);
+    const confirmActionRef = useRef<null | (() => Promise<void> | void)>(null);
+
+    function openConfirm(opts: { title: string; body?: string; onConfirm: () => Promise<void> | void }) {
+        setConfirmTitle(opts.title);
+        setConfirmBody(opts.body ?? null);
+        confirmActionRef.current = opts.onConfirm;
+        setConfirmOpen(true);
+    }
+
+    async function runConfirmAction() {
+        const fn = confirmActionRef.current;
+        setConfirmOpen(false);
+        confirmActionRef.current = null;
+        if (!fn) return;
+        await fn();
+    }
+
     // TITLE SEARCH
     const [titleInput, setTitleInput] = useState('');
     const [titleQuery, setTitleQuery] = useState('');
@@ -225,7 +387,7 @@ export default function WorkerMonographsPage() {
     // DICTS
     const [filtersLoading, setFiltersLoading] = useState(false);
     const [types, setTypes] = useState<RefItem[]>([]);
-    const [disciplines, setDisciplines] = useState<RefItem[]>([]); // UWAGA: to są MOJE dyscypliny
+    const [disciplines, setDisciplines] = useState<RefItem[]>([]); // moje dyscypliny
     const [cycles, setCycles] = useState<CycleItem[]>([]);
 
     // FILTERS (RIGHT)
@@ -249,6 +411,7 @@ export default function WorkerMonographsPage() {
     const [modalLoading, setModalLoading] = useState(false);
     const [modalError, setModalError] = useState<string | null>(null);
     const [draft, setDraft] = useState<any | null>(null);
+    const [savingDraft, setSavingDraft] = useState(false);
 
     // SLOTS
     const [slotBusyId, setSlotBusyId] = useState<number | null>(null);
@@ -262,7 +425,7 @@ export default function WorkerMonographsPage() {
     );
 
     const disciplineOptionsSS: SearchSelectOption[] = useMemo(
-        () => [{ id: 0, label: '— moja dyscyplina —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))],
+        () => [{ id: 0, label: '— dyscyplina —' }, ...disciplines.map((d) => ({ id: d.id, label: d.name }))],
         [disciplines]
     );
 
@@ -285,26 +448,18 @@ export default function WorkerMonographsPage() {
 
             const [tRes, myDiscRes, cRes] = await Promise.all([
                 authFetch(LIST_TYPES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
-                authFetch(LIST_MY_DISCIPLINES_URL, { method: 'GET' } as RequestInit),
+                authFetch(LIST_MY_DISCIPLINES_URL, {method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'ASC' }) } as RequestInit),
                 authFetch(LIST_CYCLES_URL, { method: 'POST', headers, body: JSON.stringify({ page: 0, size: 200, sortDir: 'DESC' }) } as RequestInit),
             ]);
 
-            const [tTxt, myDiscTxt, cTxt] = await Promise.all([
-                tRes.text().catch(() => ''),
-                myDiscRes.text().catch(() => ''),
-                cRes.text().catch(() => ''),
-            ]);
+            const [tTxt, myDiscTxt, cTxt] = await Promise.all([tRes.text().catch(() => ''), myDiscRes.text().catch(() => ''), cRes.text().catch(() => '')]);
 
             setTypes(tRes.ok ? ((safeJson(tTxt)?.item ?? safeJson(tTxt)?.items ?? []) as RefItem[]) : []);
 
             if (myDiscRes.ok) {
                 const data = (safeJson(myDiscTxt) ?? {}) as ListWorkerDisciplineResponse;
                 const arr =
-                    (data?.discipline ??
-                        data?.disciplines ??
-                        data?.items ??
-                        data?.item ??
-                        []) as WorkerDisciplineResponse[];
+                    (data?.discipline ?? data?.disciplines ?? data?.items ?? data?.item ?? []) as WorkerDisciplineResponse[];
 
                 const mapped: RefItem[] = Array.isArray(arr)
                     ? arr.map((d) => ({ id: Number(d.id) || 0, name: String(d.name ?? '').trim() })).filter((d) => d.id > 0 && d.name)
@@ -325,9 +480,9 @@ export default function WorkerMonographsPage() {
         setLoading(true);
         setErr(null);
 
-        try {
-            const effectiveTitle = String(titleOverride ?? titleQuery ?? '').trim();
+        const effectiveTitle = String(titleOverride ?? titleQuery ?? '').trim();
 
+        try {
             const body = {
                 typeId: filters.typeId > 0 ? filters.typeId : null,
                 disciplineId: filters.disciplineId > 0 ? filters.disciplineId : null,
@@ -346,7 +501,7 @@ export default function WorkerMonographsPage() {
             const text = await res.text().catch(() => '');
             if (!res.ok) {
                 setItems([]);
-                setErr(text || `HTTP ${res.status}`);
+                setErr(mapApiError(res.status, text));
                 return;
             }
 
@@ -356,7 +511,7 @@ export default function WorkerMonographsPage() {
             setPageMeta(data?.pageMeta ?? { page, size });
         } catch (e: any) {
             setItems([]);
-            setErr(String(e?.message ?? e));
+            setErr(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setLoading(false);
         }
@@ -371,14 +526,16 @@ export default function WorkerMonographsPage() {
         try {
             const res = await authFetch(`${GET_MONOGRAPH_URL}?id=${encodeURIComponent(String(id))}`, { method: 'GET' });
             const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+            if (!res.ok) {
+                setModalError(mapApiError(res.status, text));
+                return;
+            }
 
             const data = safeJson(text) ?? null;
             const co = normalizeCoauthors(data);
 
             const typeId = toIntOr0(data?.typeId ?? data?.type?.id ?? 0);
             const disciplineId = toIntOr0(data?.disciplineId ?? data?.discipline?.id ?? 0);
-
             const monograficPublisherTitle = String(data?.monograficPublisherTitle ?? data?.monograficTitle ?? '').trim();
 
             setDraft({
@@ -393,7 +550,7 @@ export default function WorkerMonographsPage() {
                 })),
             });
         } catch (e: any) {
-            setModalError(String(e?.message ?? e));
+            setModalError(translateBackendMessage(String(e?.message ?? e)));
         } finally {
             setModalLoading(false);
         }
@@ -406,56 +563,87 @@ export default function WorkerMonographsPage() {
         if (!itemId) return;
 
         if (!disciplineId) {
-            alert('Ta monografia nie ma ustawionej dyscypliny. Ustaw ją w szczegółach i spróbuj ponownie.');
+            showMessage('error', 'Ta monografia nie ma ustawionej dyscypliny. Ustaw ją w szczegółach i spróbuj ponownie.');
             return;
         }
 
-        // jeśli dyscypliny w itemach są spoza "moich", backend i tak odrzuci – ale tu dajemy jasny komunikat:
         if (disciplines.length > 0 && !myDisciplineIdSet.has(disciplineId)) {
-            alert('Nie masz przypisanej tej dyscypliny (sloty działają tylko w Twoich dyscyplinach).');
+            showMessage('error', 'Nie masz przypisanej tej dyscypliny (sloty działają tylko w Twoich dyscyplinach).');
             return;
         }
 
-        setSlotBusyId(itemId);
-        try {
-            const body = {
-                disciplineId,
-                itemType: 'SLOT_ITEM_MONOGRAPH', // WAŻNE
-                itemId,
-            };
+        openConfirm({
+            title: 'Dodać monografię do slotów?',
+            body: 'Pozycja zostanie zsynchronizowana ze slotami dla jej dyscypliny.',
+            onConfirm: async () => {
+                setSlotBusyId(itemId);
+                try {
+                    const body: SlotsRequest = {
+                        disciplineId,
+                        itemType: 'SLOT_ITEM_MONOGRAPH',
+                        itemId,
+                    };
 
-            const res = await authFetch(ADD_TO_SLOT_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            } as RequestInit);
+                    const res = await authFetch(ADD_TO_SLOT_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    } as RequestInit);
 
-            if (!res.ok) {
-                const msg = await readApiError(res);
-                alert('Nie udało się dodać do slotów:\n' + msg);
-                return;
-            }
+                    if (!res.ok) {
+                        const msg = await readApiError(res);
+                        showMessage('error', `Nie udało się dodać do slotów:\n${msg}`);
+                        return;
+                    }
 
-            alert('Dodano do slotów.');
-        } finally {
-            setSlotBusyId(null);
-        }
+                    showMessage('success', 'Dodano do slotów.');
+                } catch (e: any) {
+                    showMessage('error', `Nie udało się dodać do slotów:\n${translateBackendMessage(String(e?.message ?? e))}`);
+                } finally {
+                    setSlotBusyId(null);
+                }
+            },
+        });
     }
 
     async function createMonograph(e?: React.FormEvent) {
         e?.preventDefault();
+        if (creating) return;
+
+        const v = validateRequiredMonographFields({
+            typeId: createForm.typeId,
+            disciplineId: createForm.disciplineId,
+            title: createForm.title,
+            monograficPublisherTitle: createForm.monograficPublisherTitle,
+            publicationYear: createForm.publicationYear,
+            isbn: createForm.isbn,
+            coauthors: createForm.coauthors,
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
         setCreating(true);
         try {
+            const isbnTrim = String(createForm.isbn ?? '').trim();
+
             const body = {
                 typeId: createForm.typeId > 0 ? createForm.typeId : null,
                 disciplineId: createForm.disciplineId > 0 ? createForm.disciplineId : null,
                 title: createForm.title?.trim() || null,
-                doi: String(createForm.doi ?? '').trim(),
-                isbn: String(createForm.isbn ?? '').trim(),
+                doi: String(createForm.doi ?? '').trim() || null,
+                // KLUCZOWE: nie wysyłaj pustego stringa
+                isbn: isbnTrim || null,
                 monograficPublisherTitle: createForm.monograficPublisherTitle?.trim() || null,
                 publicationYear: createForm.publicationYear ? toIntOrNull(createForm.publicationYear) : null,
                 coauthors: (Array.isArray(createForm.coauthors) ? createForm.coauthors : [])
-                    .map((c: any) => ({ userId: Number(c?.userId ?? 0) || 0, fullName: String(c?.fullName ?? '').trim() }))
+                    .map((c: any) => ({
+                        userId: Number(c?.userId ?? 0) || 0,
+                        fullName: String(c?.fullName ?? '').trim(),
+                        unitName: c?.unitName ?? null,
+                    }))
                     .filter((c) => c.fullName.length > 0),
             };
 
@@ -467,10 +655,12 @@ export default function WorkerMonographsPage() {
 
             if (!res.ok) {
                 const msg = await readApiError(res);
-                throw new Error(msg);
+                showMessage('error', `Błąd dodawania monografii:\n${msg}`);
+                return;
             }
 
-            await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20);
+            showMessage('success', 'Monografia dodana.');
+            await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20, titleQuery);
 
             setCreateForm({
                 typeId: 0,
@@ -483,7 +673,7 @@ export default function WorkerMonographsPage() {
                 coauthors: [],
             });
         } catch (e: any) {
-            alert('Błąd createMonograph:\n' + String(e?.message ?? e));
+            showMessage('error', `Błąd dodawania monografii:\n${translateBackendMessage(String(e?.message ?? e))}`);
         } finally {
             setCreating(false);
         }
@@ -491,31 +681,51 @@ export default function WorkerMonographsPage() {
 
     async function updateMonograph() {
         if (!draft?.id) return;
+        if (savingDraft) return;
 
         const id = Number(draft.id);
         if (!Number.isFinite(id) || id <= 0) {
-            alert('Nieprawidłowe id.');
+            showMessage('error', 'Nieprawidłowe id monografii.');
             return;
         }
 
+        const v = validateRequiredMonographFields({
+            typeId: draft.typeId,
+            disciplineId: draft.disciplineId,
+            title: draft.title,
+            monograficPublisherTitle: draft.monograficPublisherTitle,
+            publicationYear: draft.publicationYear,
+            isbn: draft.isbn,
+            coauthors: draft.coauthors,
+        });
+
+        if (!v.ok) {
+            showMessage('error', v.message);
+            return;
+        }
+
+        setSavingDraft(true);
         try {
+            const isbnTrim = String(draft.isbn ?? '').trim();
+
             const body = {
                 id,
                 typeId: draft.typeId ? Number(draft.typeId) : null,
                 disciplineId: draft.disciplineId ? Number(draft.disciplineId) : null,
 
-                title: String(draft.title ?? '').trim(),
-                doi: String(draft.doi ?? '').trim(),
-                isbn: String(draft.isbn ?? '').trim(),
+                title: String(draft.title ?? '').trim() || null,
+                doi: String(draft.doi ?? '').trim() || null,
+                // KLUCZOWE: nie wysyłaj pustego stringa
+                isbn: isbnTrim || null,
                 monograficPublisherTitle: String(draft.monograficPublisherTitle ?? '').trim() || null,
-                publicationYear:
-                    draft.publicationYear != null && String(draft.publicationYear).trim() !== '' ? Number(draft.publicationYear) : null,
+                publicationYear: draft.publicationYear != null && String(draft.publicationYear).trim() !== '' ? Number(draft.publicationYear) : null,
 
                 coauthors: Array.isArray(draft.coauthors)
                     ? draft.coauthors
                         .map((c: any) => ({
                             userId: Number(c?.userId ?? 0) || 0,
                             fullName: String(c?.fullName ?? '').trim(),
+                            unitName: c?.unitName ?? null,
                         }))
                         .filter((c: any) => c.fullName.length > 0)
                     : [],
@@ -529,7 +739,7 @@ export default function WorkerMonographsPage() {
 
             if (!res.ok) {
                 const msg = await readApiError(res);
-                alert('Błąd updateMonograph:\n' + msg);
+                showMessage('error', `Błąd zapisu:\n${msg}`);
                 return;
             }
 
@@ -551,36 +761,49 @@ export default function WorkerMonographsPage() {
                 })),
             });
 
-            await fetchList(pageMeta.page, pageMeta.size);
-            alert('Zapisano.');
+            await fetchList(pageMeta.page, pageMeta.size, titleQuery);
+            showMessage('success', 'Zapisano.');
         } catch (e: any) {
-            alert('Błąd updateMonograph:\n' + String(e?.message ?? e));
+            showMessage('error', `Błąd zapisu:\n${translateBackendMessage(String(e?.message ?? e))}`);
+        } finally {
+            setSavingDraft(false);
         }
     }
 
     async function deleteMonograph(id: number) {
-        if (!confirm(`Usunąć monografię ID=${id}?`)) return;
+        openConfirm({
+            title: 'Usunąć monografię?',
+            body: 'Ta operacja jest nieodwracalna.',
+            onConfirm: async () => {
+                try {
+                    const res = await authFetch(`${DELETE_MONOGRAPH_URL}?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' });
+                    if (!res.ok) {
+                        const msg = await readApiError(res);
+                        showMessage('error', `Błąd usuwania:\n${msg}`);
+                        return;
+                    }
 
-        try {
-            const res = await authFetch(`${DELETE_MONOGRAPH_URL}?id=${encodeURIComponent(String(id))}`, { method: 'DELETE' });
-            const text = await res.text().catch(() => '');
-            if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+                    showMessage('success', 'Usunięto.');
+                    await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20, titleQuery);
 
-            await fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20);
-            setModalOpen(false);
-            setDraft(null);
-        } catch (e: any) {
-            alert('Błąd deleteMonograph: ' + String(e?.message ?? e));
-        }
+                    setModalOpen(false);
+                    setDraft(null);
+                    setModalError(null);
+                } catch (e: any) {
+                    showMessage('error', `Błąd usuwania:\n${translateBackendMessage(String(e?.message ?? e))}`);
+                }
+            },
+        });
     }
 
     function prevPage() {
         const p = Math.max(0, (pageMeta.page ?? 0) - 1);
-        void fetchList(p, pageMeta.size ?? 20);
+        void fetchList(p, pageMeta.size ?? 20, titleQuery);
     }
+
     function nextPage() {
         const p = (pageMeta.page ?? 0) + 1;
-        void fetchList(p, pageMeta.size ?? 20);
+        void fetchList(p, pageMeta.size ?? 20, titleQuery);
     }
 
     if (!initialized) return <div className={styles.page}>Ładowanie…</div>;
@@ -589,10 +812,12 @@ export default function WorkerMonographsPage() {
         <div className={styles.page}>
             <header className={styles.headerRow}>
                 <h1 className={styles.title}>Monografie — moje publikacje</h1>
-                <button className={styles.ghostBtn} onClick={() => fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20)} disabled={loading}>
+                <button className={styles.ghostBtn} onClick={() => fetchList(pageMeta.page ?? 0, pageMeta.size ?? 20, titleQuery)} disabled={loading}>
                     Odśwież
                 </button>
             </header>
+
+            <InlineNotice msg={uiMsg} />
 
             {err ? (
                 <div className={styles.empty} style={{ whiteSpace: 'pre-wrap' }}>
@@ -653,8 +878,8 @@ export default function WorkerMonographsPage() {
                                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                                                         {preview.map((c, idx) => (
                                                             <span key={`${id}-c-${idx}`} className={`${styles.badge} ${styles.badgeMuted}`} title={coauthorLabel(c)}>
-                                {coauthorLabel(c)}
-                              </span>
+                                                                {coauthorLabel(c)}
+                                                            </span>
                                                         ))}
                                                         {more > 0 && <span className={`${styles.badge} ${styles.badgeMuted}`}>+{more}</span>}
                                                     </div>
@@ -711,42 +936,37 @@ export default function WorkerMonographsPage() {
                 </div>
 
                 {/* RIGHT: FILTERS */}
-                <div className={styles.rightColumn}>
-                    <div className={styles.actionsCard} style={{ position: 'sticky', top: 16, alignSelf: 'flex-start' }}>
+                <div className={styles.rightColumn} style={{ overflow: 'visible' }}>
+                    <div
+                        className={styles.actionsCard}
+                        style={{
+                            position: 'sticky',
+                            top: 16,
+                            alignSelf: 'flex-start',
+                            overflow: 'visible',
+                            zIndex: 50,
+                        }}
+                    >
                         <h3>Szukaj</h3>
                         <p>Filtry listy monografii</p>
 
-                        <div style={{display: 'grid', gap: 10}}>
-                            <input
-                                className={styles.searchInput}
-                                placeholder="Szukaj po tytule…"
-                                value={titleInput}
-                                onChange={(e) => setTitleInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                        const t = titleInput.trim();
-                                        setTitleQuery(t);
-                                        void fetchList(0, pageMeta.size ?? 20, t);
-                                    }
-                                }}
-                            />
-
+                        <div style={{ display: 'grid', gap: 10, overflow: 'visible' }}>
                             <SearchSelect
                                 label="Typ"
                                 value={filters.typeId}
                                 options={typeOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— typ publikacji —"
-                                onChange={(id) => setFilters((p) => ({...p, typeId: Number(id) || 0}))}
+                                onChange={(id) => setFilters((p) => ({ ...p, typeId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
-                                label="Dyscyplina (moja)"
+                                label="Dyscyplina"
                                 value={filters.disciplineId}
                                 options={disciplineOptionsSS}
                                 disabled={filtersLoading}
-                                placeholder="— moja dyscyplina —"
-                                onChange={(id) => setFilters((p) => ({...p, disciplineId: Number(id) || 0}))}
+                                placeholder="— dyscyplina —"
+                                onChange={(id) => setFilters((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
                             />
 
                             <SearchSelect
@@ -755,18 +975,20 @@ export default function WorkerMonographsPage() {
                                 options={cycleOptionsSS}
                                 disabled={filtersLoading}
                                 placeholder="— cykl —"
-                                onChange={(id) => setFilters((p) => ({...p, cycleId: Number(id) || 0}))}
+                                onChange={(id) => setFilters((p) => ({ ...p, cycleId: Number(id) || 0 }))}
                             />
 
-                            <div style={{display: 'flex', gap: 10}}>
-                                <button className={styles.primaryBtn} onClick={() => {
-                                    const t = titleInput.trim();
-                                    setTitleQuery(t);
-                                    void fetchList(0, pageMeta.size ?? 20, t);
-                                }}
-
-
-                                        disabled={loading} style={{flex: '1 1 auto'}}>
+                            <div style={{ display: 'flex', gap: 10 }}>
+                                <button
+                                    className={styles.primaryBtn}
+                                    onClick={() => {
+                                        const t = titleInput.trim();
+                                        setTitleQuery(t);
+                                        void fetchList(0, pageMeta.size ?? 20, t);
+                                    }}
+                                    disabled={loading}
+                                    style={{ flex: '1 1 auto' }}
+                                >
                                     Szukaj
                                 </button>
                                 <button
@@ -777,9 +999,8 @@ export default function WorkerMonographsPage() {
                                         setTitleQuery('');
                                         void fetchList(0, pageMeta.size ?? 20, '');
                                     }}
-
                                     disabled={loading}
-                                    style={{whiteSpace: 'nowrap'}}
+                                    style={{ whiteSpace: 'nowrap' }}
                                 >
                                     Reset
                                 </button>
@@ -790,7 +1011,7 @@ export default function WorkerMonographsPage() {
             </div>
 
             {/* CREATE (BOTTOM) */}
-            <div className={styles.bigCardFull} style={{marginTop: 16}}>
+            <div className={styles.bigCardFull} style={{ marginTop: 16 }}>
                 <div className={styles.cardHeader}>
                     <div className={styles.bigAvatar}>+</div>
                     <div>
@@ -801,21 +1022,13 @@ export default function WorkerMonographsPage() {
 
                 <form onSubmit={createMonograph} style={{ display: 'grid', gap: 10, marginTop: 12 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                        <SearchSelect label="Typ" value={createForm.typeId} options={typeOptionsSS} disabled={filtersLoading} placeholder="— typ publikacji —" onChange={(id) => setCreateForm((p) => ({ ...p, typeId: Number(id) || 0 }))} />
                         <SearchSelect
-                            label="Typ"
-                            value={createForm.typeId}
-                            options={typeOptionsSS}
-                            disabled={filtersLoading}
-                            placeholder="— typ publikacji —"
-                            onChange={(id) => setCreateForm((p) => ({ ...p, typeId: Number(id) || 0 }))}
-                        />
-
-                        <SearchSelect
-                            label="Dyscyplina (moja)"
+                            label="Dyscyplina"
                             value={createForm.disciplineId}
                             options={disciplineOptionsSS}
                             disabled={filtersLoading}
-                            placeholder="— moja dyscyplina —"
+                            placeholder="— dyscyplina —"
                             onChange={(id) => setCreateForm((p) => ({ ...p, disciplineId: Number(id) || 0 }))}
                         />
                     </div>
@@ -824,7 +1037,7 @@ export default function WorkerMonographsPage() {
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
                         <input className={styles.searchInput} placeholder="DOI" value={createForm.doi} onChange={(e) => setCreateForm((p) => ({ ...p, doi: e.target.value }))} />
-                        <input className={styles.searchInput} placeholder="ISBN" value={createForm.isbn} onChange={(e) => setCreateForm((p) => ({ ...p, isbn: e.target.value }))} />
+                        <input className={styles.searchInput} placeholder="ISBN (ISBN-13)" value={createForm.isbn} onChange={(e) => setCreateForm((p) => ({ ...p, isbn: e.target.value }))} />
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
@@ -834,12 +1047,7 @@ export default function WorkerMonographsPage() {
                             value={createForm.monograficPublisherTitle}
                             onChange={(e) => setCreateForm((p) => ({ ...p, monograficPublisherTitle: e.target.value }))}
                         />
-                        <input
-                            className={styles.searchInput}
-                            placeholder="Rok publikacji"
-                            value={createForm.publicationYear}
-                            onChange={(e) => setCreateForm((p) => ({ ...p, publicationYear: e.target.value }))}
-                        />
+                        <input className={styles.searchInput} placeholder="Rok publikacji" value={createForm.publicationYear} onChange={(e) => setCreateForm((p) => ({ ...p, publicationYear: e.target.value }))} />
                     </div>
 
                     <CoauthorsPicker value={createForm.coauthors} onChange={(next) => setCreateForm((p) => ({ ...p, coauthors: next }))} label="Współautorzy" />
@@ -893,24 +1101,17 @@ export default function WorkerMonographsPage() {
                         <div className={styles.kvGrid} style={{ marginBottom: 12 }}>
                             <div className={styles.kvKey}>Typ</div>
                             <div className={styles.kvVal}>
-                                <SearchSelect
-                                    label=""
-                                    value={toIntOr0(draft.typeId)}
-                                    options={typeOptionsSS}
-                                    disabled={filtersLoading}
-                                    placeholder="— typ publikacji —"
-                                    onChange={(id) => setDraft((p: any) => ({ ...p, typeId: Number(id) || 0 }))}
-                                />
+                                <SearchSelect label="" value={toIntOr0(draft.typeId)} options={typeOptionsSS} disabled={filtersLoading} placeholder="— typ publikacji —" onChange={(id) => setDraft((p: any) => ({ ...p, typeId: Number(id) || 0 }))} />
                             </div>
 
-                            <div className={styles.kvKey}>Dyscyplina (moja)</div>
+                            <div className={styles.kvKey}>Dyscyplina )</div>
                             <div className={styles.kvVal}>
                                 <SearchSelect
                                     label=""
                                     value={toIntOr0(draft.disciplineId)}
                                     options={disciplineOptionsSS}
                                     disabled={filtersLoading}
-                                    placeholder="— moja dyscyplina —"
+                                    placeholder="— dyscyplina —"
                                     onChange={(id) => setDraft((p: any) => ({ ...p, disciplineId: Number(id) || 0 }))}
                                 />
                             </div>
@@ -922,11 +1123,7 @@ export default function WorkerMonographsPage() {
 
                             <div className={styles.kvKey}>Rok</div>
                             <div className={styles.kvVal}>
-                                <input
-                                    className={styles.searchInput}
-                                    value={String(draft.publicationYear ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, publicationYear: e.target.value ? Number(e.target.value) : null }))}
-                                />
+                                <input className={styles.searchInput} value={String(draft.publicationYear ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, publicationYear: e.target.value ? Number(e.target.value) : null }))} />
                             </div>
 
                             <div className={styles.kvKey}>DOI</div>
@@ -934,26 +1131,18 @@ export default function WorkerMonographsPage() {
                                 <input className={styles.searchInput} value={String(draft.doi ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, doi: e.target.value }))} />
                             </div>
 
-                            <div className={styles.kvKey}>ISBN</div>
+                            <div className={styles.kvKey}>ISBN (ISBN-13)</div>
                             <div className={styles.kvVal}>
                                 <input className={styles.searchInput} value={String(draft.isbn ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, isbn: e.target.value }))} />
                             </div>
 
                             <div className={styles.kvKey}>Wydawca</div>
                             <div className={styles.kvVal}>
-                                <input
-                                    className={styles.searchInput}
-                                    value={String(draft.monograficPublisherTitle ?? '')}
-                                    onChange={(e) => setDraft((p: any) => ({ ...p, monograficPublisherTitle: e.target.value }))}
-                                />
+                                <input className={styles.searchInput} value={String(draft.monograficPublisherTitle ?? '')} onChange={(e) => setDraft((p: any) => ({ ...p, monograficPublisherTitle: e.target.value }))} />
                             </div>
                         </div>
 
-                        <CoauthorsPicker
-                            value={Array.isArray(draft.coauthors) ? draft.coauthors : []}
-                            onChange={(next) => setDraft((p: any) => ({ ...p, coauthors: next }))}
-                            label="Współautorzy"
-                        />
+                        <CoauthorsPicker value={Array.isArray(draft.coauthors) ? draft.coauthors : []} onChange={(next) => setDraft((p: any) => ({ ...p, coauthors: next }))} label="Współautorzy" />
 
                         <div style={{ marginTop: 12 }}>
                             <div className={styles.muted} style={{ fontWeight: 800, marginBottom: 8 }}>
@@ -962,22 +1151,42 @@ export default function WorkerMonographsPage() {
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                 {normalizeCoauthors({ coauthors: draft.coauthors }).map((c, idx) => (
                                     <span key={idx} className={`${styles.badge} ${styles.badgeMuted}`} title={coauthorLabel(c)}>
-                    {coauthorLabel(c)}
-                  </span>
+                                        {coauthorLabel(c)}
+                                    </span>
                                 ))}
                             </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                            <button className={styles.primaryBtn} onClick={updateMonograph}>
-                                Zapisz
+                        <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+                            <button className={styles.primaryBtn} onClick={updateMonograph} disabled={savingDraft}>
+                                {savingDraft ? 'Zapisywanie…' : 'Zapisz'}
                             </button>
+
                             <button className={styles.dangerBtn} onClick={() => deleteMonograph(Number(draft.id))}>
                                 Usuń
                             </button>
                         </div>
                     </>
                 )}
+            </Modal>
+
+            {/* CONFIRM MODAL */}
+            <Modal open={confirmOpen} title={confirmTitle} onClose={() => setConfirmOpen(false)}>
+                <div style={{ display: 'grid', gap: 12 }}>
+                    {confirmBody && (
+                        <div className={styles.muted} style={{ whiteSpace: 'pre-line' }}>
+                            {confirmBody}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                        <button className={styles.ghostBtn} onClick={() => setConfirmOpen(false)}>
+                            Anuluj
+                        </button>
+                        <button className={styles.dangerBtn} onClick={runConfirmAction}>
+                            Potwierdź
+                        </button>
+                    </div>
+                </div>
             </Modal>
         </div>
     );
